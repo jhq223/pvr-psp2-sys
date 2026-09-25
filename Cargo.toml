@@ -1,0 +1,30 @@
+[package]
+name = "pvr-psp2-sys"
+edition = "2024"
+version = "0.1.0"
+rust-version = "1.95"
+description = "Raw PVR, EGL and OpenGL ES bindings and native driver build tools for PlayStation Vita"
+readme = "README.md"
+repository = "https://github.com/jhq223/pvr-psp2-sys"
+keywords = ["vita", "psp2", "powervr", "egl", "gles"]
+categories = ["external-ffi-bindings", "graphics"]
+links = "pvr_psp2"
+publish = false
+build = "build.rs"
+exclude = ["**/*.vcxproj.user", "**/*.suo", "target/**"]
+
+[features]
+# Rebuild all four native modules using the official Windows PSVSDK.
+build-driver = []
+
+[[example]]
+name = "pvr-native-check"
+path = "native/check.rs"
+
+[[test]]
+name = "native_checks"
+path = "native/tests/checks.rs"
+
+[lints.rust]
+unsafe_code = "allow"
+warnings = "deny"

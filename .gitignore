@@ -1,0 +1,3 @@
+/target/
+**/*.vcxproj.user
+**/*.suo

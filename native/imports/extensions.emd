@@ -1,0 +1,35 @@
+emd: 1
+Library: SceDmacmgr attr: auto_export
+Library: SceDmacmgr version: 1
+Library: SceDmacmgr stubfile: "libSceDmacmgr_stub"
+Library: SceDmacmgr nidsuffix: ""
+Library: SceDmacmgr libnamenid: 0xA9E5B2F0
+Library: SceDmacmgr function: sceDmacMemcpy nidvalue: 0x9B2FF739
+Library: SceGpuEs4ForUser attr: auto_export
+Library: SceGpuEs4ForUser version: 1
+Library: SceGpuEs4ForUser stubfile: "libSceGpuEs4ForUser_stub"
+Library: SceGpuEs4ForUser nidsuffix: ""
+Library: SceGpuEs4ForUser libnamenid: 0x6EC1443D
+Library: SceGpuEs4ForUser function: sceGpuSignalWait nidvalue: 0x05BCE11C
+Library: SceGpuEs4ForUser function: sceGpuSignalWaitLockup nidvalue: 0xE0DECA6E
+Library: SceGpuEs4ForUser function: PVRSRV_BridgeDispatchKM nidvalue: 0xCA19ABCD
+Library: SceSysmodule attr: auto_export
+Library: SceSysmodule version: 1
+Library: SceSysmodule stubfile: "libSceSysmoduleInternal_stub"
+Library: SceSysmodule nidsuffix: ""
+Library: SceSysmodule libnamenid: 0x03FCF19D
+Library: SceSysmodule function: sceSysmoduleLoadModuleInternal nidvalue: 0x2399BF45
+Library: SceModulemgr attr: auto_export
+Library: SceModulemgr version: 1
+Library: SceModulemgr stubfile: "libSceModulemgrInternal_stub"
+Library: SceModulemgr nidsuffix: ""
+Library: SceModulemgr libnamenid: 0xEAED1616
+Library: SceModulemgr function: sceKernelGetModuleIdByAddr nidvalue: 0xF5798C7C
+Library: SceModulemgr function: sceKernelGetModuleInfo nidvalue: 0x36585DAF
+Library: SceModulemgr function: sceKernelGetLibraryInfoByNID nidvalue: 0xEAEB1312
+Library: SceDisplayUser attr: auto_export
+Library: SceDisplayUser version: 1
+Library: SceDisplayUser stubfile: "libSceDisplayUserInternal_stub"
+Library: SceDisplayUser nidsuffix: ""
+Library: SceDisplayUser libnamenid: 0x4FAACD11
+Library: SceDisplayUser function: sceDisplayGetMaximumFrameBufResolution nidvalue: 0x8848ADDD

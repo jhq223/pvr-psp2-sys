@@ -1,0 +1,97 @@
+/* Auto-generated file - don't edit. */
+
+#define PDS_PIXELEVENT_TILEXY_DATA_SEGMENT_SIZE	(64UL)
+static const IMG_UINT32 g_pui32PDSPixelEvent_TileXY[31] = {
+0x00000000, 0x00000100, 0x00000000, 0x00000000,
+0x00000000, 0x00000000, 0x00000000, 0xFFFEFFFF,
+0x00000000, 0x00000000, 0x00000000, 0x00000000,
+0x00000000, 0x00000000, 0x00000000, 0x00000000,
+0x93800006, 0x07020806, 0x07020806, 0x07020806,
+0x07060185, 0xAF000000, 0x9480000D, 0xCF028230,
+0x87600000, 0xCF0C0630, 0x10000C60, 0x07600B05,
+0xAF000000, 0x07081185, 0xAF000000,
+};
+
+
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOT0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOT0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[4] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOT0_LOCATIONS	{16}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOT1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOT1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[5] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOT1_LOCATIONS	{20}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOR0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOR0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[2] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOR0_LOCATIONS	{8}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOR1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOR1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[3] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOR1_LOCATIONS	{12}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOR2)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOR2 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[12] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOR2_LOCATIONS	{48}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetPTOFF0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetPTOFF0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[8] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_PTOFF0_LOCATIONS	{32}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetPTOFF1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetPTOFF1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[9] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_PTOFF1_LOCATIONS	{36}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetPTOFF2)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetPTOFF2 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[6] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_PTOFF2_LOCATIONS	{24}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEvent_TileXYSetEOT_DOUTA1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEvent_TileXYSetEOT_DOUTA1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[0] = ui32Value;
+}
+#define PDS_PIXELEVENT_TILEXY_EOT_DOUTA1_LOCATIONS	{0}
+

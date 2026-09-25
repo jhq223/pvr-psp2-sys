@@ -1,0 +1,87 @@
+/* Auto-generated file - don't edit. */
+
+#define PDS_PIXELEVENT_DATA_SEGMENT_SIZE	(48UL)
+static const IMG_UINT32 g_pui32PDSPixelEvent[25] = {
+0x00000000, 0x00000000, 0x00000000, 0x00000000,
+0x00000000, 0x00000000, 0x00000000, 0xFFFEFFFF,
+0x00000100, 0x00000000, 0x00020000, 0x00000000,
+0x93800003, 0x07020185, 0xAF000000, 0x9480000B,
+0xCF088230, 0x87600000, 0xCF800630, 0xC7600830,
+0x10000A60, 0x07600B05, 0xAF000000, 0x07041185,
+0xAF000000,
+};
+
+
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetEOT0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetEOT0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[0] = ui32Value;
+}
+#define PDS_PIXELEVENT_EOT0_LOCATIONS	{0}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetEOT1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetEOT1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[1] = ui32Value;
+}
+#define PDS_PIXELEVENT_EOT1_LOCATIONS	{4}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetEOR0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetEOR0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[2] = ui32Value;
+}
+#define PDS_PIXELEVENT_EOR0_LOCATIONS	{8}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetEOR1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetEOR1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[3] = ui32Value;
+}
+#define PDS_PIXELEVENT_EOR1_LOCATIONS	{12}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetEOR2)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetEOR2 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[9] = ui32Value;
+}
+#define PDS_PIXELEVENT_EOR2_LOCATIONS	{36}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetPTOFF0)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetPTOFF0 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[4] = ui32Value;
+}
+#define PDS_PIXELEVENT_PTOFF0_LOCATIONS	{16}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetPTOFF1)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetPTOFF1 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[5] = ui32Value;
+}
+#define PDS_PIXELEVENT_PTOFF1_LOCATIONS	{20}
+
+#ifdef INLINE_IS_PRAGMA
+#pragma inline(PDSPixelEventSetPTOFF2)
+#endif
+FORCE_INLINE IMG_VOID PDSPixelEventSetPTOFF2 (IMG_PUINT32 pui32Program, IMG_UINT32 ui32Value)
+{
+	pui32Program[6] = ui32Value;
+}
+#define PDS_PIXELEVENT_PTOFF2_LOCATIONS	{24}
+
