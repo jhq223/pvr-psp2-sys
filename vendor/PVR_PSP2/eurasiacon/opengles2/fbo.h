@@ -72,6 +72,8 @@ typedef struct GLES2FrameBufferAttachableRec
 	 * See GetFrameBufferCompleteness(), glTexImage2D() and glRenderbufferStorageOES()
 	 */
 	EGLRenderSurface *psRenderSurface;
+    struct GLES2FrameBufferAttachableRec *psSurfacePrev, *psSurfaceNext;
+    IMG_BOOL bSurfaceCached;
 
 	/* If the texture behind the fbo has been ghosted the meminfo may be destroyed */
 	IMG_BOOL			bGhosted;

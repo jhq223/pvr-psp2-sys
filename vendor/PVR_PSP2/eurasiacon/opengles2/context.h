@@ -113,6 +113,8 @@ typedef struct GLES2ContextSharedStateTAG
 
 	/* Keeps track of what textures are attached to any given surface */
 	GLES2TextureManager  *psTextureManager;
+    GLES2FrameBufferAttachable *psSurfaceCacheHead, *psSurfaceCacheTail;
+    IMG_UINT32 ui32SurfaceCacheCount;
 
 	/* Keeps track of what USSE code variants are attached to any given surface */
 	KRMKickResourceManager sUSEShaderVariantKRM;

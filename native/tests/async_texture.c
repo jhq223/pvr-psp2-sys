@@ -175,7 +175,11 @@ static void MakeTextureMipmapLevelsSoftware(GLES2Context *gc, GLES2Texture *text
 static int PVRSRVAllocSyncInfo(void *dev, PVRSRV_CLIENT_SYNC_INFO **out) {
     *out = malloc(sizeof(**out)); assert(*out); ++syncs; return 0;
 }
-static int PVRSRVFreeSyncInfo(void *dev, PVRSRV_CLIENT_SYNC_INFO *sync) { free(sync); --syncs; return 0; }
+static int fail_sync_free;
+static int PVRSRVFreeSyncInfo(void *dev, PVRSRV_CLIENT_SYNC_INFO *sync) {
+    if(fail_sync_free) return -1;
+    free(sync); --syncs; return 0;
+}
 #include "swtexop_functions.inc"
 static void clean_handles(void) { for(int i = 1; i < 64; ++i) assert(!handles[i].live); assert(!syncs); }
 static void upload(GLES2Context *gc, GLES2Texture *texture, void *data) {
@@ -266,7 +270,17 @@ int main(void) {
     for(unsigned i=0;i<SW_SYNC_POOL;++i) cached[i]=SWTextureAcquireSync(&gc);
     assert(syncs==SW_SYNC_POOL && !gc.psSWTexture->syncCount);
     for(unsigned i=0;i<SW_SYNC_POOL;++i) SWTextureReleaseSync(&gc,cached[i]);
+    fail_sync_free=1;
+    SWTextureTrimSyncs(&gc);
+    assert(syncs==SW_SYNC_POOL && gc.psSWTexture->syncCount==SW_SYNC_POOL);
+    fail_sync_free=0;
+    SWTextureTrimSyncs(&gc);
+    assert(!syncs && !gc.psSWTexture->syncCount);
+    /* A later upload still gets a working fence after the pool was trimmed. */
+    cached[0]=SWTextureAcquireSync(&gc); assert(syncs==1);
+    SWTextureReleaseSync(&gc,cached[0]);
     SWTextureDestroy(&gc); assert(waits==initial_waits+1); clean_handles();
+    SWTextureTrimSyncs(&gc); /* No worker state is also valid. */
     /* A different sharing context can submit to the same transfer context:
      * local epoch zero must not suppress its completion wait. */
     assert(SWTextureInit(&gc)); shared.ui32RefCount=2;

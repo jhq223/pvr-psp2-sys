@@ -153,6 +153,11 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     for (name, file, markers) in [
         (
+            "fbo_surface",
+            "opengles2/fbo.c",
+            vec!["IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface("],
+        ),
+        (
             "span_copy",
             "opengles2/spanpack.c",
             vec![
@@ -340,6 +345,8 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "swap_failures",
         "texture_dependencies",
         "texture_validation",
+        "texture_sync_reclaim",
+        "fbo_surface_cache",
         "error_origin",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));

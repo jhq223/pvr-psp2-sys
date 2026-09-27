@@ -22,12 +22,15 @@
 #include "context.h"
 
 #include "psp2/swtexop.h"
+#include "texture_sync_reclaim.h"
 
 #if defined(SGX_FEATURE_HYBRID_TWIDDLING)
 #include "twiddle.h"
 #endif
 
 #define GLES2_FRAMEBUFFER_STATUS_UNKNOWN		0xDEAD
+
+#include "fbo_surface_cache.h"
 
 
 /***********************************************************************************
@@ -335,6 +338,7 @@ static IMG_VOID FrameBufferHasBeenModified(GLES2FrameBuffer *psFrameBuffer)
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface(GLES2Context *gc, GLES2FrameBufferAttachable *psAttachment)
 {
+    ForgetFBOSurface(gc, psAttachment);
 	if(psAttachment->psRenderSurface)
 	{
 		FlushAttachableIfNeeded(gc, psAttachment, GLES2_SCHEDULE_HW_LAST_IN_SCENE|GLES2_SCHEDULE_HW_WAIT_FOR_3D);
@@ -1774,6 +1778,22 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 
 	psFBORenderSurface = IMG_NULL;
 
+    /* Surface creation needs a sync object even when texture memory is already
+     * resident. Retire idle transfer fences before capturing override pointers. */
+    {
+        IMG_UINT32 attachment;
+        for(attachment = 0; attachment < GLES2_MAX_ATTACHMENTS; ++attachment)
+        {
+            GLES2FrameBufferAttachable *target = psFrameBuffer->apsAttachment[attachment];
+            if(target && !target->psRenderSurface)
+            {
+                TrimIdleFBOSurfaces(gc);
+                ReclaimIdleTextureSyncs(gc);
+                break;
+            }
+        }
+    }
+
 	if(psFrameBuffer->sMode.ui32ColorBits)
 	{
 		PVRSRV_CLIENT_SYNC_INFO	*psOverrideSyncInfo = IMG_NULL;
@@ -2295,6 +2315,7 @@ IMG_INTERNAL GLenum GetFrameBufferCompleteness(GLES2Context *gc)
 
 	PVR_UNREFERENCED_PARAMETER(bAssert);
 
+	TouchFBOSurface(gc, psFrameBuffer);
 	return psFrameBuffer->eStatus;
 }
 

@@ -41,6 +41,7 @@ IMG_BOOL SWTextureBusy(GLES2Context *gc, GLES2Texture *texture);
 IMG_VOID SWTextureStopWorkers(GLES2Context *gc);
 IMG_VOID SWTextureDestroy(GLES2Context *gc);
 IMG_VOID SWTextureTrimStaging(GLES2Context *gc);
+IMG_VOID SWTextureTrimSyncs(GLES2Context *gc);
 IMG_VOID SWTextureTransferSubmitted(GLES2Context *gc);
 IMG_VOID *SWTextureAllocStaging(GLES2Context *gc, IMG_UINT32 size);
 IMG_VOID SWTextureFreeStaging(GLES2Context *gc, IMG_VOID *pointer, IMG_UINT32 size);

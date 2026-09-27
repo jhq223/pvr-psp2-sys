@@ -551,6 +551,23 @@ IMG_VOID SWTextureTrimStaging(GLES2Context *gc)
         if(unused[i]) sceHeapFreeHeapMemory(gc->pvUNCHeap, unused[i]);
 }
 
+/* Idle cached fences compete with render surfaces for the same kernel quota. */
+IMG_VOID SWTextureTrimSyncs(GLES2Context *gc)
+{
+    SWTextureState *state = gc->psSWTexture;
+    IMG_UINT32 i = 0;
+    if(!state) return;
+    Lock(state);
+    while(i < state->syncCount)
+    {
+        if(PVRSRVFreeSyncInfo(gc->ps3DDevData, state->syncPool[i]) == PVRSRV_OK)
+            state->syncPool[i] = state->syncPool[--state->syncCount];
+        else
+            ++i;
+    }
+    Unlock(state);
+}
+
 PVRSRV_CLIENT_SYNC_INFO *SWTextureAcquireSync(GLES2Context *gc)
 {
     SWTextureState *state = gc->psSWTexture;
