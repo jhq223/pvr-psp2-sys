@@ -154,9 +154,11 @@ static IMG_BOOL ReplaceBufferStorage(GLES2Context *gc, GLES2BufferObject *buffer
     if(!ghost) return IMG_FALSE;
     if(size)
     {
-        error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ | PVRSRV_MAP_GC_MMU, size, alignment, &replacement);
+        /* Buffer CPU writes and TA reads are ordered by sBufferObjectKRM.
+         * No upload, render-surface or transfer operation uses a buffer sync. */
+        error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ | PVRSRV_MAP_GC_MMU, size, alignment, &replacement);
         if(error != PVRSRV_OK)
-            error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ, size, alignment, &replacement);
+            error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ, size, alignment, &replacement);
     }
     if(error != PVRSRV_OK) { GLES2Free(IMG_NULL, ghost); return IMG_FALSE; }
     ghost->psMemInfo = buffer->psMemInfo;
@@ -662,6 +664,7 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
 	GLES2BufferObject *psBufObj;
 	GLES2VertexArrayObject *psVAO;
 	PVRSRV_ERROR eError;
+    SceHeapAllocFailure failures[2];
     IMG_BOOL replaced = IMG_FALSE;
 
 	__GLES2_GET_CONTEXT();
@@ -794,24 +797,28 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
 		if(size)
 		{
 
-			eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
-				PVRSRV_MEM_READ | PVRSRV_MAP_GC_MMU,		/* Read only (by device) */
+			eError = GLES2AllocDeviceMemHeapWithReport(gc,
+				PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ | PVRSRV_MAP_GC_MMU, /* KRM tracks TA use. */
 				uAllocSize,
 				ui32AllocAlign,
-				&psBufObj->psMemInfo);
+				&psBufObj->psMemInfo, &failures[0]);
 
 			if (eError != PVRSRV_OK)
 			{
-				eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
-					PVRSRV_MEM_READ,							/* Read only (by device) */
+				eError = GLES2AllocDeviceMemHeapWithReport(gc,
+					PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ,
 					uAllocSize,
 					ui32AllocAlign,
-					&psBufObj->psMemInfo);
+					&psBufObj->psMemInfo, &failures[1]);
 			}
 
 			if (eError != PVRSRV_OK)
 			{
 				PVR_DPF((PVR_DBG_ERROR,"glBufferData: Can't allocate memory for object"));
+                printf("[PVR][BUFALLOC] target=0x%X bytes=%u align=%u CDRAM=%s/0x%X/%u USER_NC=%s/0x%X/%u\n",
+                    target, uAllocSize, ui32AllocAlign,
+                    failures[0].stage, failures[0].error, failures[0].blockSize,
+                    failures[1].stage, failures[1].error, failures[1].blockSize);
 
 				psBufObj->psMemInfo = IMG_NULL;
 

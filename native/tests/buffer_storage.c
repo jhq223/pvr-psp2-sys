@@ -19,6 +19,7 @@ typedef int GLsizeiptr;
 #define PVRSRV_OK 0
 #define PVRSRV_MEM_READ 1
 #define PVRSRV_MAP_GC_MMU 2
+#define PVRSRV_MEM_NO_SYNCOBJ 8
 #define GLES_ASSERT assert
 #define PVR_DPF(x) ((void)0)
 #define PVR_UNREFERENCED_PARAMETER(x) ((void)(x))
@@ -43,6 +44,7 @@ typedef int GLsizeiptr;
 #define GLES2MemCopy memcpy
 #define VAO(gc) 1
 #define VAO_INDEX_BUFFER_OBJECT(gc) 1
+#include "heap_failure.inc"
 typedef struct { unsigned needed; } KRMResource;
 typedef struct { unsigned uAllocSize; void *pvLinAddr; } PVRSRV_CLIENT_MEM_INFO;
 typedef struct { struct { unsigned ui32RefCount; } sNamedItem; KRMResource sResource; PVRSRV_CLIENT_MEM_INFO *psMemInfo; unsigned ui32AllocAlign, ui32BufferSize, eUsage; int bRangeCached, bMapped; } GLES2BufferObject;
@@ -54,6 +56,8 @@ typedef struct { Shared *psSharedState; unsigned ui32VBOMemCurrent, ui32VBOHighW
 } GLES2Context;
 static int fail_host, fail_device, fail_ghost, wait_ok = 1, live_device;
 static unsigned error, waits;
+static int sync_exhausted;
+static unsigned sync_requests;
 static GLES2Context *current;
 #define __GLES2_GET_CONTEXT() GLES2Context *gc = current
 static KRMResource *retired;
@@ -63,10 +67,20 @@ static void GLES2Free(GLES2Context *gc, void *p) { free(p); }
 static int GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, unsigned flags, unsigned size, unsigned alignment, PVRSRV_CLIENT_MEM_INFO **result) {
     *result = NULL;
     if(fail_device) { --fail_device; return -1; }
+    if(!(flags & PVRSRV_MEM_NO_SYNCOBJ)) {
+        ++sync_requests;
+        if(sync_exhausted) return 0xb9;
+    }
     *result = malloc(sizeof(**result)); assert(*result); (*result)->uAllocSize = size;
     (*result)->pvLinAddr = calloc(1, size); assert((*result)->pvLinAddr); ++live_device; return 0;
 }
 static void GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_MEM_INFO *mem) { --live_device; free(mem->pvLinAddr); free(mem); }
+static int GLES2AllocDeviceMemHeapWithReport(GLES2Context *gc, unsigned flags, unsigned size,
+    unsigned alignment, PVRSRV_CLIENT_MEM_INFO **result, SceHeapAllocFailure *failure) {
+    int code = GLES2ALLOCDEVICEMEM_HEAP(gc, flags, size, alignment, result);
+    *failure = (SceHeapAllocFailure){ code == 0xb9 ? "sync-object" : code ? "mspace-alloc" : "ok", code, 0 };
+    return code;
+}
 static int KRM_GhostResource(int *manager, KRMResource *original, KRMResource *ghost) {
     if(fail_ghost) return 0;
     ghost->needed = original->needed; original->needed = 0; retired = ghost; return 1;
@@ -137,6 +151,34 @@ static void buffer_data_orphan(void)
     DestroyBufferObjectGhostKRM(&gc, retired); retired = NULL;
     FreeBufferObject(&gc, b, 0); assert(!live_device);
 }
+
+/* A full sync-info table must not block CPU-written, TA-read buffer storage.
+ * Both fresh storage and busy-buffer replacement retain their KRM lifetime. */
+static void buffer_data_without_sync_slots(unsigned target, int fallback)
+{
+    Shared shared = {0, 1};
+    GLES2VertexArrayObject vao = {0};
+    GLES2Context gc = {.psSharedState = &shared, .sVAOMachine = {&vao}};
+    GLES2BufferObject *b = calloc(1, sizeof(*b)); assert(b);
+    unsigned char data[48]; memset(data, 29, sizeof(data));
+    gc.sBufferObject.psActiveBuffer[target - GL_ARRAY_BUFFER] = b;
+    if(target == GL_ELEMENT_ARRAY_BUFFER) vao.psBoundElementBuffer = b;
+    current = &gc; error = waits = sync_requests = 0; sync_exhausted = 1;
+    fail_device = fallback;
+    glBufferData(target, sizeof(data), data, GL_STREAM_DRAW);
+    assert(!error && !sync_requests && live_device == 1);
+    assert(!memcmp(b->psMemInfo->pvLinAddr, data, sizeof(data)));
+    PVRSRV_CLIENT_MEM_INFO *old = b->psMemInfo;
+    b->sResource.needed = 1;
+    memset(data, 61, sizeof(data)); fail_device = fallback;
+    glBufferData(target, sizeof(data), data, GL_STREAM_DRAW);
+    assert(!error && !sync_requests && !waits && live_device == 2);
+    assert(retired && b->psMemInfo != old && ((unsigned char *)old->pvLinAddr)[0] == 29);
+    assert(!memcmp(b->psMemInfo->pvLinAddr, data, sizeof(data)));
+    DestroyBufferObjectGhostKRM(&gc, retired); retired = NULL;
+    FreeBufferObject(&gc, b, 0); assert(!live_device);
+    sync_exhausted = 0;
+}
 int main(void) {
     Shared shared = {0, 1}; GLES2Context gc = {.psSharedState = &shared}; GLES2BufferObject *b = buffer(&gc);
     PVRSRV_CLIENT_MEM_INFO *old = b->psMemInfo;
@@ -163,5 +205,9 @@ int main(void) {
     buffer_data_fallback(0, 2, 0, 48, 0);
     buffer_data_fallback(0, 4, 1, 80, 0); /* Safe reallocation also fails: report OOM. */
     buffer_data_orphan(); /* Successful orphaning still avoids waiting. */
-    puts("buffer storage: allocation rollback, API fallback, ghost ownership, deletion and zero size passed");
+    for(int fallback = 0; fallback < 2; ++fallback) {
+        buffer_data_without_sync_slots(GL_ARRAY_BUFFER, fallback);
+        buffer_data_without_sync_slots(GL_ELEMENT_ARRAY_BUFFER, fallback);
+    }
+    puts("buffer storage: sync-slot exhaustion, allocation rollback, API fallback, ghost ownership, deletion and zero size passed");
 }

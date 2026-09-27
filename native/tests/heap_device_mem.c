@@ -70,7 +70,8 @@ int main(void) {
             assert(report.blockSize == 4096);
         }
         for(unsigned no_sync = 0; no_sync < 2; ++no_sync) {
-            failure = SUCCESS;
+            /* NO_SYNCOBJ allocations must also succeed when no sync slots remain. */
+            failure = no_sync ? SYNC : SUCCESS;
             PVRSRV_CLIENT_MEM_INFO *info = NULL;
             unsigned attributes = flags | (no_sync ? PVRSRV_MEM_NO_SYNCOBJ : 0);
             assert(!GLES2ALLOCDEVICEMEM_HEAP(&gc, attributes, 4096, 64, &info));
