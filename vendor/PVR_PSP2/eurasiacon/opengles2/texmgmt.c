@@ -556,7 +556,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
         if(eError == PVRSRV_OK) goto allocated;
         gc->ui32TextureReclaimBudget = ui32TexSize;
         gc->ui32TextureReclaimed = 0;
-        gc->bTextureReclaimLimited = PVR_OPT(10);
+        gc->bTextureReclaimLimited = IMG_TRUE;
         KRM_ReclaimUnneededResources(gc, &psTexMgr->sKRM);
         gc->bTextureReclaimLimited = IMG_FALSE;
         sceHeapTrimEmpty(gc->pvCDRAMHeap);
@@ -2879,8 +2879,8 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
          * never a render target. Submit them so their KRM dependencies can
          * retire; keep the deletion pin until object cleanup is complete. */
         if(psTex->sDeletionGhost.psMemInfo &&
-           (!PVR_OPT(8) || !KRM_FlushUnKickedResource(&gc->psSharedState->psTextureManager->sKRM,
-               &psTex->sDeletionGhost.sResource, gc, KickUnFlushed_ScheduleTA)))
+           !KRM_FlushUnKickedResource(&gc->psSharedState->psTextureManager->sKRM,
+               &psTex->sDeletionGhost.sResource, gc, KickUnFlushed_ScheduleTA))
             FlushAllUnflushedFBO(gc, IMG_FALSE);
 #if defined(GLES2_EXTENSION_TEXTURE_STREAM)
         psTex->psBufferDevice = IMG_NULL;

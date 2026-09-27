@@ -1,6 +1,5 @@
 #include <assert.h>
 #define PVRSRV_MAP_GC_MMU 4
-#define PVR_OPT(n) 1
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

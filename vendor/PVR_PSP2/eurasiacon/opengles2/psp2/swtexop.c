@@ -88,13 +88,6 @@ static IMG_BOOL HasJob(SWTextureState *state, GLES2Texture *texture, SceUID call
 {
     IMG_UINT32 i;
     if(!state->active) return IMG_FALSE;
-    if(!PVR_OPT(6))
-    {
-        for(i = 0; i < state->jobCount; ++i)
-            if(state->jobs[i].state && state->jobs[i].thread != caller &&
-               (!texture || state->jobs[i].texture == texture)) return IMG_TRUE;
-        return IMG_FALSE;
-    }
     i = texture ? state->buckets[TextureBucket(texture)] : state->activeHead;
     while(i != SW_NONE)
     {
@@ -206,7 +199,7 @@ static IMG_INT32 Cleanup(SceSize size, IMG_VOID *argument)
         if(count)
         {
             /* The fixed batch contains only transfers submitted before this wait. */
-            if(!PVR_OPT(6) || state->gc->psSharedState->ui32RefCount != 1 || transfer > state->completedTransfer)
+            if(state->gc->psSharedState->ui32RefCount != 1 || transfer > state->completedTransfer)
             {
                 while(SGXWaitTransfer(state->gc->ps3DDevData, state->gc->psSysContext->hTransferContext) != PVRSRV_OK)
                     sceKernelDelayThread(1000);
@@ -246,7 +239,7 @@ static IMG_VOID Retire(GLES2Context *gc, IMG_VOID *pointer, IMG_UINT32 stagingSi
     for(i = state->activeHead; i != SW_NONE; i = state->jobs[i].activeNext)
         if(state->jobs[i].thread == caller)
         { entry.exclude = state->jobs[i].serial; limit = SW_RETIRE_COUNT; break; }
-    while(state->count >= limit || (PVR_OPT(6) && !entry.exclude && stagingSize && state->retiredBytes &&
+    while(state->count >= limit || (!entry.exclude && stagingSize && state->retiredBytes &&
         (stagingSize > SW_BYTE_BUDGET || state->retiredBytes > SW_BYTE_BUDGET - stagingSize)))
     {
         sceKernelClearEventFlag(state->space, ~1U);
@@ -364,7 +357,7 @@ static IMG_BOOL Dispatch(GLES2Context *gc, SWJob *input)
         Lock(state);
         /* Shared objects use the synchronous path, so another context cannot miss a CPU job. */
         if(!state->stopping && state->workerCount && gc->psSharedState->ui32RefCount == 1 &&
-           (!PVR_OPT(6) || (input->bytes <= SW_BYTE_BUDGET && state->activeBytes <= SW_BYTE_BUDGET - input->bytes)))
+           input->bytes <= SW_BYTE_BUDGET && state->activeBytes <= SW_BYTE_BUDGET - input->bytes)
         {
             index = state->freeJob;
             if(index != SW_NONE) state->freeJob = state->jobs[index].next;
@@ -576,7 +569,7 @@ IMG_VOID SWTextureReleaseSync(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *sync)
 {
     SWTextureState *state = gc->psSWTexture;
     if(!sync) return;
-    if(PVR_OPT(7) && state && SGX2DQueryBlitsComplete(gc->ps3DDevData, sync, IMG_FALSE) == PVRSRV_OK)
+    if(state && SGX2DQueryBlitsComplete(gc->ps3DDevData, sync, IMG_FALSE) == PVRSRV_OK)
     {
         Lock(state);
         if(!state->closing && state->syncCount < SW_SYNC_POOL)

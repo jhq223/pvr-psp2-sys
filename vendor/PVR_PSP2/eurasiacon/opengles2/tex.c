@@ -3467,7 +3467,7 @@ bad_op:
 	/* If the mipmap is attached to any framebuffer, notify it of the change */
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
 
-    if(PVR_OPT(pixels ? 2 : 1) && !ui32Level && (pfnCopyTextureData == (PFNCopyTextureData)CopyTexture32Bits ||
+    if(!ui32Level && (pfnCopyTextureData == (PFNCopyTextureData)CopyTexture32Bits ||
        pfnCopyTextureData == (PFNCopyTextureData)CopyTexture16Bits ||
        pfnCopyTextureData == (PFNCopyTextureData)CopyTexture8Bits) &&
        TextureInitializeStorage(gc, psTex, format, psTexFormat, width, height, pixels,
@@ -3540,7 +3540,7 @@ static IMG_BOOL UploadIdleTextureRegion(GLES2Context *gc, GLES2Texture *texture,
     if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
 #endif
     type = texture->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK;
-    if(PVR_OPT(4) && type == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE) layout = 0;
+    if(type == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE) layout = 0;
     else if(type == EURASIA_PDS_DOUTT1_TEXTYPE_TILED) layout = 1;
 #if !defined(SGX_FEATURE_HYBRID_TWIDDLING)
     else if(type == EURASIA_PDS_DOUTT1_TEXTYPE_2D && !(texture->ui32HWFlags & GLES2_NONPOW2)) layout = 2;
@@ -4178,7 +4178,7 @@ bad_op:
     /* Small updates to idle stride storage do not need a staging allocation,
      * transfer submission or a newly allocated sync object. Busy storage keeps
      * the hardware/ghost path and its established dependency ordering. */
-    if(PVR_OPT(4) && pui8Dest == GLES2_LOADED_LEVEL &&
+    if(pui8Dest == GLES2_LOADED_LEVEL &&
        (psTex->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK) == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE &&
        (IMG_UINT32)width * (IMG_UINT32)height * ui32DstBytesPerPixel <= 65536U &&
        UploadIdleTextureRegion(gc, psTex, psMipLevel, xoffset, yoffset, width, height,
@@ -5355,7 +5355,7 @@ bad_op:
 	 *********************************************************************************/
 
 
-    if(PVR_OPT(3) && !gc->sAppHints.bDisableHWTQNormalBlit && !ui32Level &&
+    if(!gc->sAppHints.bDisableHWTQNormalBlit && !ui32Level &&
        (internalformat == GL_RGBA || internalformat == GL_RGB))
         TextureInitializeStorage(gc, psTex, internalformat, psTexFormat, width, height, IMG_NULL, 0);
 

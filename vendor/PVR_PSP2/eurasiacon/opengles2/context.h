@@ -420,7 +420,6 @@ __inline IMG_VOID *GLES2CallocHeapCDRAM(GLES2Context *gc, unsigned int size)
 PVRSRV_CLIENT_SYNC_INFO *SWTextureAcquireSync(GLES2Context *gc);
 IMG_VOID SWTextureReleaseSync(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *sync);
 
-#include "psp2/optimization.h"
 
 typedef struct GLES2HeapMemInfo {
     PVRSRV_CLIENT_MEM_INFO info;
@@ -459,19 +458,13 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 	((GLES2HeapMemInfo *)psMemInfo)->heap = heap;
     ((GLES2HeapMemInfo *)psMemInfo)->texture = optionalSync;
     /* CPU upload and sampling use KRM; acquire a transfer sync only on demand. */
-    if(PVR_OPT(7) && optionalSync) ui32Attribs |= PVRSRV_MEM_NO_SYNCOBJ;
+    if(optionalSync) ui32Attribs |= PVRSRV_MEM_NO_SYNCOBJ;
     psMemInfo->pvLinAddr = mem;
 
 	if (!(ui32Attribs & PVRSRV_MEM_NO_SYNCOBJ))
 	{
 		PVRSRV_ERROR error = PVRSRVAllocSyncInfo(gc->ps3DDevData, &psMemInfo->psClientSyncInfo);
-		if(optionalSync && error == PVRSRV_ERROR_SYNC_INFO_LIMIT_REACHED)
-		{
-			/* Keep the allocation; software texture transfers need no sync object. */
-			psMemInfo->psClientSyncInfo = IMG_NULL;
-			ui32Attribs |= PVRSRV_MEM_NO_SYNCOBJ;
-		}
-		else if(error != PVRSRV_OK)
+		if(error != PVRSRV_OK)
 		{
 			failure->stage = "sync-object";
 			failure->error = error;
@@ -502,9 +495,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapWithReport(GLES2Context *gc, IMG_UI
     return GLES2AllocDeviceMemHeapInternal(gc, attributes, size, alignment, out, failure, IMG_FALSE);
 }
 
-/* Texture sync objects are optional when the system's object quota is full.
- * Such textures use software transfers; KRM and SWTextureWait still protect
- * GPU readers and CPU uploads. Keep every other allocation failure fatal. */
+/* Textures acquire a sync object when a hardware transfer needs one. */
 __inline PVRSRV_ERROR GLES2AllocTextureMemWithReport(GLES2Context *gc, IMG_UINT32 attributes,
     IMG_UINT32 size, IMG_UINT32 alignment, PVRSRV_CLIENT_MEM_INFO **out, SceHeapAllocFailure *failure)
 {

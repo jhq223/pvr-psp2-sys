@@ -32,7 +32,6 @@
 #include <sceerror.h>
 #include "libheap_custom.h"
 #include "heaplib_internal.h"
-#include "optimization.h"
 #include "services.h"
 #include "img_types.h"
 #include "psp2_pvr_defs.h"
@@ -512,7 +511,7 @@ int	sceHeapFreeHeapMemory(void *heap, void *ptr)
 			sceClibMspaceFree(hp->msp, ptr);
 
 			if (hp != &head->prim && sceClibMspaceIsHeapEmpty(hp->msp) &&
-                !head->spare && head->bsize && hp->size + sizeof(*hp) <= (PVR_OPT(5) ? 8U * 1024U * 1024U : (unsigned int)(head->bsize & ~4095)))
+                !head->spare && head->bsize && hp->size + sizeof(*hp) <= (8U * 1024U * 1024U))
                 head->spare = hp;
             if (hp != &head->prim && hp != head->spare && sceClibMspaceIsHeapEmpty(hp->msp)) {
 				//J 双方向リンクリストから抜きます

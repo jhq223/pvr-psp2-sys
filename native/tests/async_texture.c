@@ -9,7 +9,6 @@
 #include <time.h>
 
 typedef uintptr_t IMG_UINTPTR_T;
-#include "psp2/optimization.h"
 typedef uint8_t IMG_UINT8;
 typedef uint16_t IMG_UINT16;
 typedef uint32_t IMG_UINT32;

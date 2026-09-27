@@ -57,7 +57,7 @@
 static IMG_BOOL EnsureTextureTransferSync(GLES2Context *gc, GLES2Texture *texture)
 {
     if(TextureSyncInfo(texture)) return IMG_TRUE;
-    if(!PVR_OPT(7) || !texture->psMemInfo) return IMG_FALSE;
+    if(!texture->psMemInfo) return IMG_FALSE;
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
     if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
 #endif

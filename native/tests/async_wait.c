@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include "psp2/optimization.h"
 typedef unsigned IMG_UINT32;
 typedef uintptr_t IMG_UINTPTR_T;
 typedef int IMG_BOOL, SceUID;

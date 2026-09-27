@@ -1,5 +1,4 @@
 #include <assert.h>
-#include "psp2/optimization.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,7 +82,7 @@ int main(void) {
             assert(report.error == (mode == BACKING ? -42 : mode == DESCRIPTOR ? PVRSRV_ERROR_OUT_OF_MEMORY : -77));
             assert(report.blockSize == 4096);
         }
-        /* Texture-only quota fallback; strict allocations must still fail. */
+        /* Textures allocate transfer syncs on demand; other allocations need one. */
         failure = SYNC_LIMIT;
         PVRSRV_CLIENT_MEM_INFO *texture = NULL;
         SceHeapAllocFailure report;
@@ -91,13 +90,13 @@ int main(void) {
         assert(!texture && !buffers && !descriptors && !syncs);
         backing_calls = descriptor_calls = sync_calls = 0;
         assert(!GLES2AllocTextureMemWithReport(&gc, flags, 128, 64, &texture, &report));
-        assert(backing_calls == 1 && descriptor_calls == 1 && sync_calls == (PVR_OPT(7) ? 0U : 1U));
+        assert(backing_calls == 1 && descriptor_calls == 1 && sync_calls == 0U);
         assert(!strcmp(report.stage, "ok") && !report.error);
         assert(texture && !texture->psClientSyncInfo && !syncs);
         assert(texture->ui32Flags & PVRSRV_MEM_NO_SYNCOBJ);
         assert(!GLES2FREEDEVICEMEM_HEAP(&gc, texture));
         assert(!buffers && !descriptors);
-        for(int mode = BACKING; mode <= (PVR_OPT(7) ? DESCRIPTOR : SYNC); ++mode) {
+        for(int mode = BACKING; mode <= DESCRIPTOR; ++mode) {
             failure = mode;
             assert(GLES2AllocTextureMemWithReport(&gc, flags, 128, 64, &texture, &report) != PVRSRV_OK);
             assert(!texture && !buffers && !descriptors && !syncs);

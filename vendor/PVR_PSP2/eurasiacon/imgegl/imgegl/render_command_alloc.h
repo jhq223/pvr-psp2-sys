@@ -1,4 +1,3 @@
-#include "../../opengles2/psp2/optimization.h"
 #include "render_failure.h"
 
 /* These two circular command buffers are consumed only by their render
@@ -10,7 +9,7 @@ static PVRSRV_ERROR KrkrAllocRenderCommandBuffer(SrvSysContext *psSysContext,
     PVRSRV_CLIENT_MEM_INFO **out, const char *stage)
 {
     PVRSRV_ERROR error = IMGEGLALLOCDEVICEMEM(device, heap,
-        PVRSRV_MEM_READ | (PVR_OPT(9) ? PVRSRV_MEM_NO_SYNCOBJ : 0), bytes, alignment, out);
+        PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ, bytes, alignment, out);
     if(error != PVRSRV_OK) KrkrRenderFailure(stage, (unsigned)error, bytes);
     return error;
 }

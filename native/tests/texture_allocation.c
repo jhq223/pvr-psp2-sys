@@ -1,5 +1,4 @@
 #include <assert.h>
-#include "psp2/optimization.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
