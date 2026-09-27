@@ -420,15 +420,18 @@ typedef struct GLES2HeapMemInfo {
     IMG_VOID *heap;
 } GLES2HeapMemInfo;
 
-__inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32Attribs, IMG_UINT32 ui32Size, IMG_UINT32 ui32Alignment, PVRSRV_CLIENT_MEM_INFO **ppsMemInfo)
+__inline PVRSRV_ERROR GLES2AllocDeviceMemHeapWithReport(GLES2Context *gc, IMG_UINT32 ui32Attribs, IMG_UINT32 ui32Size, IMG_UINT32 ui32Alignment, PVRSRV_CLIENT_MEM_INFO **ppsMemInfo, SceHeapAllocFailure *failure)
 {
 	PVRSRV_CLIENT_MEM_INFO *psMemInfo;
 	IMG_PVOID mem;
-
-	if (ui32Attribs & PVRSRV_MAP_GC_MMU)
-		mem = GLES2MemalignHeapCDRAM(gc, ui32Size, ui32Alignment);
-	else
-		mem = GLES2MemalignHeapUNC(gc, ui32Size, ui32Alignment);
+	IMG_PVOID heap = (ui32Attribs & PVRSRV_MAP_GC_MMU) ? gc->pvCDRAMHeap : gc->pvUNCHeap;
+	SceHeapAllocOptParam opt;
+	SceHeapAllocFailure ignored;
+	if(!failure) failure = &ignored;
+	*ppsMemInfo = IMG_NULL;
+	opt.size = sizeof(opt);
+	opt.alignment = ui32Alignment;
+	mem = sceHeapAllocHeapMemoryWithReport(heap, ui32Size, &opt, failure);
 
 	if (!mem)
 	{
@@ -439,11 +442,13 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 
 	if (!psMemInfo)
 	{
-		GLES2Free(gc, mem);
+		failure->stage = "descriptor";
+		failure->error = PVRSRV_ERROR_OUT_OF_MEMORY;
+		sceHeapFreeHeapMemory(heap, mem);
 		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
-	((GLES2HeapMemInfo *)psMemInfo)->heap = (ui32Attribs & PVRSRV_MAP_GC_MMU) ? gc->pvCDRAMHeap : gc->pvUNCHeap;
+	((GLES2HeapMemInfo *)psMemInfo)->heap = heap;
     psMemInfo->pvLinAddr = mem;
 
 	if (!(ui32Attribs & PVRSRV_MEM_NO_SYNCOBJ))
@@ -451,6 +456,8 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 		PVRSRV_ERROR error = PVRSRVAllocSyncInfo(gc->ps3DDevData, &psMemInfo->psClientSyncInfo);
 		if(error != PVRSRV_OK)
 		{
+			failure->stage = "sync-object";
+			failure->error = error;
 			sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem);
 			GLES2Free(IMG_NULL, psMemInfo);
 			return error;
@@ -470,6 +477,11 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 	*ppsMemInfo = psMemInfo;
 
 	return PVRSRV_OK;
+}
+
+__inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32Attribs, IMG_UINT32 ui32Size, IMG_UINT32 ui32Alignment, PVRSRV_CLIENT_MEM_INFO **ppsMemInfo)
+{
+	return GLES2AllocDeviceMemHeapWithReport(gc, ui32Attribs, ui32Size, ui32Alignment, ppsMemInfo, IMG_NULL);
 }
 
 __inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_MEM_INFO *psMemInfo)

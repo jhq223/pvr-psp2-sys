@@ -67,6 +67,13 @@ typedef struct SceHeapAllocOptParam {
 	unsigned int alignment;
 } SceHeapAllocOptParam;
 
+/* Per-call failure data: no global error slot shared with upload workers. */
+typedef struct SceHeapAllocFailure {
+	const char *stage;
+	int error;
+	unsigned int blockSize;
+} SceHeapAllocFailure;
+
 typedef struct SceHeapMallinfo {
 	int arena;					/*J カーネルから割り当てた総メモリサイズ  */
 								/*E Total space allocated from system     */
@@ -103,6 +110,7 @@ int   sceHeapDeleteHeap(void *heap);
 /*E Allocate memory from heap memory */
 void *sceHeapAllocHeapMemory(void *heap, unsigned int nbytes);
 void *sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam);
+void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam, SceHeapAllocFailure *failure);
 
 /*J ヒープメモリへメモリ解放 */
 /*E Release memory back to heap memory */

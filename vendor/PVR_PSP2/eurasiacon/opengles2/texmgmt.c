@@ -386,6 +386,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 	IMG_UINT32 ui32BytesPerChunk = ui32BytesPerTexel / psTexFormat->ui32NumChunks;
 	IMG_UINT32 i;
 	PVRSRV_ERROR eError;
+	SceHeapAllocFailure failures[4];
 
 	GLES2_TIME_START(GLES2_TIMER_TEXTURE_ALLOCATE_TIME);
 
@@ -510,19 +511,19 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 		}
 	}
 
-	eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
+	eError = GLES2AllocDeviceMemHeapWithReport(gc,
 		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MAP_GC_MMU,
 		ui32TexSize,
 		ui32TexAlign,
-		&psTex->psMemInfo);
+		&psTex->psMemInfo, &failures[0]);
 
 	if (eError != PVRSRV_OK)
 	{
-		eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
+		eError = GLES2AllocDeviceMemHeapWithReport(gc,
 			PVRSRV_MEM_READ | PVRSRV_MEM_WRITE,
 			ui32TexSize,
 			ui32TexAlign,
-			&psTex->psMemInfo);
+			&psTex->psMemInfo, &failures[1]);
 	}
 
 	if(eError != PVRSRV_OK)
@@ -532,23 +533,41 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 		KRM_DestroyUnneededGhosts(gc, &psTexMgr->sKRM);
 		KRM_ReclaimUnneededResources(gc, &psTexMgr->sKRM);
 
-		eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
+		eError = GLES2AllocDeviceMemHeapWithReport(gc,
 			PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MAP_GC_MMU,
 			ui32TexSize,
 			ui32TexAlign,
-			&psTex->psMemInfo);
+			&psTex->psMemInfo, &failures[2]);
 
 		if (eError != PVRSRV_OK)
 		{
-			eError = GLES2ALLOCDEVICEMEM_HEAP(gc,
+			eError = GLES2AllocDeviceMemHeapWithReport(gc,
 				PVRSRV_MEM_READ | PVRSRV_MEM_WRITE,
 				ui32TexSize,
 				ui32TexAlign,
-				&psTex->psMemInfo);
+				&psTex->psMemInfo, &failures[3]);
 		}
 
 		if(eError != PVRSRV_OK)
 		{
+			/* Log only terminal failure, after both pools and reclamation.
+			 * Keep each attempt: a successful fallback must remain silent. */
+			struct malloc_managed_size libcStats;
+			int libcResult;
+			sceClibPrintf("[PVR][TEXALLOC] name=%u size=%ux%u levels=%u bytes=%u align=%u hw=0x%X state1=0x%X\n",
+				psTex->sNamedItem.ui32Name, psTex->psMipLevel[0].ui32Width,
+				psTex->psMipLevel[0].ui32Height, psTex->ui32NumLevels,
+				ui32TexSize, ui32TexAlign, psTex->ui32HWFlags, psTex->sState.aui32StateWord1[0]);
+			for(i = 0; i < 4; ++i)
+				sceClibPrintf("[PVR][ALLOC] attempt=%u pool=%s stage=%s error=0x%X block=%u\n",
+					i + 1, (i & 1) ? "USER_NC" : "CDRAM", failures[i].stage,
+					(unsigned int)failures[i].error, failures[i].blockSize);
+			GLES2MemSet(&libcStats, 0, sizeof(libcStats));
+			libcResult = malloc_stats_fast(&libcStats);
+			sceClibPrintf("[PVR][HEAPS] libc_result=%d libc_used=%u libc_arena=%u unc_free=%d cdram_free=%d\n",
+				libcResult, (unsigned int)libcStats.current_inuse_size,
+				(unsigned int)libcStats.current_system_size,
+				sceHeapGetTotalFreeSize(gc->pvUNCHeap), sceHeapGetTotalFreeSize(gc->pvCDRAMHeap));
 /* PRQA S 3332 1 */ /* Override QAC suggestion and use this macro. */
 			{
 				/* Could do Load store render to clear active list */

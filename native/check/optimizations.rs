@@ -14,6 +14,23 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let output = output.canonicalize().map_err(|e| e.to_string())?;
     let source = root.join("vendor/PVR_PSP2/eurasiacon");
+    let heap_header = fs::read_to_string(source.join("opengles2/psp2/libheap_custom.h"))
+        .map_err(|e| e.to_string())?
+        .replace("\r\n", "\n");
+    let start = heap_header
+        .find("typedef struct SceHeapAllocFailure {")
+        .ok_or("missing heap failure type")?;
+    let end = start
+        + heap_header[start..]
+            .find("\n}")
+            .ok_or("unterminated heap failure type")?;
+    let end = end
+        + heap_header[end..]
+            .find(';')
+            .ok_or("unterminated heap failure typedef")?
+        + 1;
+    fs::write(output.join("heap_failure.inc"), &heap_header[start..end])
+        .map_err(|e| e.to_string())?;
     for (name, file) in [
         ("twiddle", "common/twiddle.c"),
         ("statehash", "opengles2/statehash.c"),
@@ -131,6 +148,28 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             vec!["IMG_INTERNAL IMG_VOID SetErrorFileLine("],
         ),
         (
+            "heap_allocation",
+            "opengles2/psp2/heap.c",
+            vec![
+                "void *sceHeapAllocHeapMemoryWithReport(",
+                "void\t*sceHeapAllocHeapMemoryWithOption(",
+            ],
+        ),
+        (
+            "heap_device_mem",
+            "opengles2/context.h",
+            vec![
+                "__inline PVRSRV_ERROR GLES2AllocDeviceMemHeapWithReport(",
+                "__inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(",
+                "__inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(",
+            ],
+        ),
+        (
+            "texture_allocation",
+            "opengles2/texmgmt.c",
+            vec!["IMG_INTERNAL IMG_BOOL  CreateTextureMemory("],
+        ),
+        (
             "texture_lifetime",
             "opengles2/texmgmt.c",
             vec![
@@ -220,6 +259,9 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "resource_wait",
         "buffer_storage",
         "heap_layout",
+        "heap_allocation",
+        "heap_device_mem",
+        "texture_allocation",
         "texture_lifetime",
         "vao_lifetime",
         "draw_bounds",

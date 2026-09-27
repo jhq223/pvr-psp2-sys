@@ -206,13 +206,18 @@ int sceHeapDeleteHeap(void *heap)
 
 //J ヒープメモリからメモリ確保
 //E Allocate memory from heap memory
-void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam)
+void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam, SceHeapAllocFailure *failure)
 {
 	SceHeapWorkInternal	*head;
 	SceHeapMspaceLink	*hp;
 	SceSize	alignment;
 	int		res;
 	void	*result;
+	SceHeapAllocFailure ignored;
+	if(!failure) failure = &ignored;
+	failure->stage = "argument";
+	failure->error = 0;
+	failure->blockSize = 0;
 
 	head = (SceHeapWorkInternal *)heap;
 	/* Leave room for alignment, allocator metadata and kernel block rounding. */
@@ -227,6 +232,7 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 		return (SCE_NULL);
 	}
 	if (head->magic != (SceUIntPtr)(head + 1)) {
+		failure->stage = "heap-id";
 		return (SCE_NULL);
 	}
 
@@ -248,6 +254,8 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 	//J 排他制御用の軽量ミューテックスをロック
 	res = sceKernelLockLwMutex(&head->lwmtx, 1, SCE_NULL);
 	if (res < 0) {
+		failure->stage = "heap-lock";
+		failure->error = res;
 		return (SCE_NULL);
 	}
 
@@ -259,6 +267,7 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			result = sceClibMspaceMalloc(hp->msp, nbytes);
 		}
 		if (result != SCE_NULL) {
+            failure->stage = "ok";
             if(head->spare == hp) head->spare = SCE_NULL;
 #if USE_HEAPINFO
 			//J 割り当て済み標準ブロックの数をインクリメント
@@ -271,9 +280,10 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			break;
 		}
 	}
+	failure->stage = "fixed-heap";
 	if (head->bsize > 3) {
 		//J SCE_HEAP_AUTO_EXTENDを意味している
-		SceUID uid;
+		SceUID uid = SCE_HEAP_ERROR_INVALID_ID;
 		void *p;
 		unsigned int hsize = (((head->bsize) >> 12) << 12);
 		unsigned int nbytes2;
@@ -318,12 +328,17 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			break;
 		}
 
+		failure->blockSize = hsize;
 		if (uid < 0) {
+			failure->stage = "kernel-block";
+			failure->error = uid;
 			sceKernelUnlockLwMutex(&head->lwmtx, 1);
 			return (SCE_NULL);
 		}
 		res = sceKernelGetMemBlockBase(uid, &p);
 		if (res < 0) {
+			failure->stage = "kernel-base";
+			failure->error = res;
 			sceKernelFreeMemBlock(uid);
 			sceKernelUnlockLwMutex(&head->lwmtx, 1);
 			return (SCE_NULL);
@@ -340,16 +355,12 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			IMG_NULL);
 
 		if (res != PVRSRV_OK) {
+			failure->stage = "gpu-map";
+			failure->error = res;
 			sceKernelFreeMemBlock(uid);
 			sceKernelUnlockLwMutex(&head->lwmtx, 1);
 			return (SCE_NULL);
 		}
-
-#if USE_HEAPINFO
-		//J 保持ブロック数とサイズを増やす
-		head->info.hblks++;				//J 保持ブロック数(mmap)
-		head->info.arena += hsize;		//J 保持ブロックのサイズ
-#endif	/* USE_HEAPINFO */
 
 		hp = (SceHeapMspaceLink *)p;
 
@@ -358,34 +369,45 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			hp->size = hsize - sizeof(SceHeapMspaceLink);
 			hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
 			if(!hp->msp) {
-#if USE_HEAPINFO
-				head->info.hblks--;
-				head->info.arena -= hsize;
-#endif
+				failure->stage = "mspace-create";
 				PVRSRVUnmapMemoryFromGpu(st_psDevData, p, 0, IMG_FALSE);
 				sceKernelFreeMemBlock(uid);
 				sceKernelUnlockLwMutex(&head->lwmtx, 1);
 				return SCE_NULL;
 			}
 
-			//J 双方向リンクリストに追加します。
-			//E insert to double-linked linst
-			hp->next = head->prim.next;
-			hp->prev = head->prim.next->prev;
-			head->prim.next->prev = hp;
-			hp->prev->next        = hp;
-
 			if (alignment != 0) {
 				result = sceClibMspaceMemalign(hp->msp, alignment, nbytes);
 			} else {
 				result = sceClibMspaceMalloc(hp->msp, nbytes);
 			}
+			/* A new mspace may still reject the first aligned allocation.
+			 * Publish it only after success; otherwise retries retain empty
+			 * mapped blocks and make the original memory pressure worse. */
+			if(!result) {
+				failure->stage = "mspace-alloc";
+				sceClibMspaceDestroy(hp->msp);
+				PVRSRVUnmapMemoryFromGpu(st_psDevData, p, 0, IMG_FALSE);
+				sceKernelFreeMemBlock(uid);
+				sceKernelUnlockLwMutex(&head->lwmtx, 1);
+				return SCE_NULL;
+			}
+			hp->next = head->prim.next;
+			hp->prev = &head->prim;
+			head->prim.next->prev = hp;
+			head->prim.next = hp;
+#if USE_HEAPINFO
+			head->info.hblks++;
+			head->info.arena += hsize;
+#endif
 		}
 	}
+	if(result) {
+		failure->stage = "ok";
 #if USE_HEAPINFO
-	//J 割り当て済み標準ブロックの数をインクリメント
-	head->info.ordblks++;
+		head->info.ordblks++;
 #endif	/* USE_HEAPINFO */
+	}
 	sceKernelUnlockLwMutex(&head->lwmtx, 1);
 
 #if defined(DEBUG)
@@ -403,6 +425,11 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 #endif
 
 	return (result);
+}
+
+void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam)
+{
+	return sceHeapAllocHeapMemoryWithReport(heap, nbytes, optParam, SCE_NULL);
 }
 
 
