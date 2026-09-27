@@ -28,10 +28,10 @@ typedef struct { int sKRM; } Manager;
 typedef struct { Manager *psTextureManager; int sUSEShaderVariantKRM; } Shared;
 typedef struct { int sResource; } Variant;
 typedef struct { Surface *psRenderSurface; Shared *psSharedState; struct { int bEnableAppTextureDependency; } sAppHints; struct { GLES2Texture *apsBoundTexture[4][1]; } sTexture; struct { Program *psCurrentProgram; Variant *psCurrentFragmentVariant; } sProgram; } GLES2Context;
-static int attachments,fail_at,error;
+static int attachments,fail_at,error,waits;
 static void SetError(GLES2Context *g,int e) { error=e; }
 static int KRM_Attach(int *m,void *s,int *status,int *resource) { return ++attachments!=fail_at; }
-static void SWTextureWait(GLES2Context *g,GLES2Texture *t) {}
+static void SWTextureWait(GLES2Context *g,GLES2Texture *t) { assert(t); ++waits; }
 #include "texture_dependencies_functions.inc"
 int main(void) {
     Manager manager={0}; Shared shared={&manager,0}; Surface surface={0}; Program program={0}; Variant variant={0}; GLES2Context gc={0};
@@ -44,7 +44,14 @@ int main(void) {
     for(unsigned i=0;i<3;++i) { gc.sTexture.apsBoundTexture[i][0]=&tex[i]; program.sFragment.asTextureSamplers[i].ui8ImageUnit=i; }
     program.sFragment.ui32SamplersActive=3; program.sVertex.ui32SamplersActive=1;
     attachments=0; fail_at=0; assert(AttachAllUsedResourcesToCurrentSurface(&gc));
-    assert(attachments==3 && surface.ui32NumSrcSyncs==2);
+    assert(attachments==3 && surface.ui32NumSrcSyncs==2 && waits==2);
+    /* Each draw gets fresh waits; rebinding an alias must not create another wait. */
+    waits=0; attachments=0;
+    gc.sTexture.apsBoundTexture[3][0]=&tex[0];
+    program.sFragment.asTextureSamplers[3].ui8ImageUnit=3;
+    program.sFragment.ui32SamplersActive=11;
+    assert(AttachAllUsedResourcesToCurrentSurface(&gc) && waits==2 && attachments==3);
+    program.sFragment.ui32SamplersActive=3;
     program.sFragment.ui32SamplersActive=7; attachments=0; error=0;
     assert(!AttachAllUsedResourcesToCurrentSurface(&gc) && error==GL_OUT_OF_MEMORY);
     assert(surface.ui32NumSrcSyncs==2 && attachments==2);

@@ -11,8 +11,18 @@ fn run(command: &mut Command) -> Result<(), String> {
 
 pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let root = if cfg!(windows) {
+        std::path::PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\"))
+    } else {
+        root
+    };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let output = output.canonicalize().map_err(|e| e.to_string())?;
+    let output = if cfg!(windows) {
+        std::path::PathBuf::from(output.to_string_lossy().trim_start_matches(r"\\?\"))
+    } else {
+        output
+    };
     let source = root.join("vendor/PVR_PSP2/eurasiacon");
     let heap_header = fs::read_to_string(source.join("opengles2/psp2/libheap_custom.h"))
         .map_err(|e| e.to_string())?
@@ -143,6 +153,32 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     for (name, file, markers) in [
         (
+            "span_copy",
+            "opengles2/spanpack.c",
+            vec![
+                "static IMG_VOID CopyNativeSpan(",
+                "IMG_INTERNAL IMG_VOID SpanPack16(",
+                "IMG_INTERNAL IMG_VOID SpanPack32(",
+            ],
+        ),
+        (
+            "async_wait",
+            "opengles2/psp2/swtexop.c",
+            vec![
+                "static IMG_UINT32 TextureBucket(",
+                "static IMG_VOID LinkJob(",
+                "static IMG_VOID UnlinkJob(",
+                "static IMG_BOOL HasJob(",
+                "IMG_VOID SWTextureWait(",
+                "IMG_BOOL SWTextureBusy(",
+            ],
+        ),
+        (
+            "resource_consumers",
+            "common/kickresource.c",
+            vec!["IMG_INTERNAL IMG_BOOL KRM_FlushUnKickedResource("],
+        ),
+        (
             "error_origin",
             "opengles2/misc.c",
             vec!["IMG_INTERNAL IMG_VOID SetErrorFileLine("],
@@ -151,18 +187,47 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             "heap_allocation",
             "opengles2/psp2/heap.c",
             vec![
+                "static unsigned int TrimSpare(",
+                "unsigned int sceHeapTrimEmpty(",
                 "void *sceHeapAllocHeapMemoryWithReport(",
                 "void\t*sceHeapAllocHeapMemoryWithOption(",
             ],
         ),
         (
+            "heap_release",
+            "opengles2/psp2/heap.c",
+            vec!["int\tsceHeapFreeHeapMemory("],
+        ),
+        (
             "heap_device_mem",
             "opengles2/context.h",
             vec![
+                "__inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(",
                 "__inline PVRSRV_ERROR GLES2AllocDeviceMemHeapWithReport(",
+                "__inline PVRSRV_ERROR GLES2AllocTextureMemWithReport(",
                 "__inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(",
                 "__inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(",
             ],
+        ),
+        (
+            "texture_storage",
+            "opengles2/texdata.c",
+            vec![
+                "IMG_INTERNAL IMG_UINT32 GetMipMapOffset(",
+                "IMG_INTERNAL IMG_UINT32 GetCompressedMipMapOffset(",
+                "IMG_INTERNAL IMG_UINT32 GetNPOTMipMapOffset(",
+                "IMG_VOID TextureUpload(",
+            ],
+        ),
+        (
+            "texture_initialize",
+            "opengles2/texmgmt.c",
+            vec!["IMG_INTERNAL IMG_BOOL TextureInitializeStorage("],
+        ),
+        (
+            "texture_partial",
+            "opengles2/tex.c",
+            vec!["static IMG_BOOL UploadIdleTextureRegion("],
         ),
         (
             "texture_allocation",
@@ -253,15 +318,21 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
     }
     for name in [
         "texture_region",
+        "span_copy",
         "state_cache",
         "async_texture",
+        "async_wait",
         "uniform_lookup",
         "resource_wait",
+        "resource_consumers",
         "buffer_storage",
         "heap_layout",
         "heap_allocation",
+        "heap_reuse",
         "heap_device_mem",
         "texture_allocation",
+        "texture_storage_bounds",
+        "texture_fast",
         "texture_lifetime",
         "vao_lifetime",
         "draw_bounds",

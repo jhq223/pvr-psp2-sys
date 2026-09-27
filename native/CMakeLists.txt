@@ -54,9 +54,16 @@ add_custom_command(OUTPUT "${IMPORT_DIR}/ready" ${PVR_IMPORT_LIBRARIES}
 
 include(cmake/sources.cmake)
 
+set(PVR_OPT_MASK "1023" CACHE STRING "Driver optimization groups, bit 0 through bit 9")
+
+option(PVR_PROBE_DIAGNOSTICS "Persist render allocation failures for the standalone probe" OFF)
+
 function(pvr_module name)
-    set(args -c -O3 -Xthumb=1 -include "${CMAKE_CURRENT_SOURCE_DIR}/include/sdk_extensions.h"
+    set(args -DPVR_OPT_MASK=${PVR_OPT_MASK} -c -O3 -Xthumb=1 -include "${CMAKE_CURRENT_SOURCE_DIR}/include/sdk_extensions.h"
              -I "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    if(PVR_PROBE_DIAGNOSTICS)
+        list(APPEND args -DPVR_PROBE_DIAGNOSTICS=1)
+    endif()
     foreach(definition IN LISTS ${name}_DEFINES)
         list(APPEND args "-D${definition}")
     endforeach()

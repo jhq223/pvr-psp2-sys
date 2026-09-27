@@ -256,6 +256,15 @@ typedef struct GLES2TextureRec
 
 } GLES2Texture;
 
+static __inline PVRSRV_CLIENT_SYNC_INFO *TextureSyncInfo(const GLES2Texture *texture)
+{
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    if(texture->psEGLImageTarget)
+        return texture->psEGLImageTarget->psMemInfo ? texture->psEGLImageTarget->psMemInfo->psClientSyncInfo : IMG_NULL;
+#endif
+    return texture->psMemInfo ? texture->psMemInfo->psClientSyncInfo : IMG_NULL;
+}
+
 
 /*
  * Records state of textures; whether they're idle, active, ghosted etc.
@@ -344,6 +353,9 @@ IMG_VOID ReadBackTiledData(IMG_VOID *pvDest, const IMG_VOID *pvSrc,
 IMG_VOID TextureRemoveResident(GLES2Context *gc, GLES2Texture *psTex);
 typedef IMG_VOID (*PFNReadSpan)(const GLES2PixelSpanInfo *);
 
+IMG_INTERNAL IMG_BOOL TextureInitializeStorage(GLES2Context *gc, GLES2Texture *texture,
+    GLenum requested, const GLES2TextureFormat *format, IMG_UINT32 width,
+    IMG_UINT32 height, const IMG_VOID *pixels, IMG_UINT32 sourceStride);
 IMG_INTERNAL IMG_BOOL TextureUploadNativeBC(GLES2Context *gc, GLES2Texture *texture, GLenum internalFormat,
     const GLES2TextureFormat *format, IMG_UINT32 width, IMG_UINT32 height, const IMG_VOID *pixels);
 

@@ -129,6 +129,7 @@ int   sceHeapIsAllocatedHeapMemory(void *heap, void *ptr);
 /*J ヒープメモリの空きサイズを取得 */
 /*E Get size of empty heap memory */
 int   sceHeapGetTotalFreeSize(void *heap);
+unsigned int sceHeapTrimEmpty(void *heap);
 
 /*J ヒープメモリの情報を取得 */
 /*E Get heap memory usage status */

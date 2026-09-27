@@ -28,6 +28,15 @@
 
 /* These are when native formats match */
 
+static IMG_VOID CopyNativeSpan(IMG_VOID *dst, const IMG_VOID *src, IMG_UINT32 bytes)
+{
+#if defined(__psp2__)
+    /* Match the native bulk-copy path without forcing a library call on tiny spans. */
+    if(bytes >= 64) { sceClibMemcpy(dst, src, bytes); return; }
+#endif
+    GLES2MemCopy(dst, src, bytes);
+}
+
 /***********************************************************************************
  Function Name      : SpanPack16
  Inputs             : psSpanInfo
@@ -40,12 +49,13 @@ IMG_INTERNAL IMG_VOID SpanPack16(const GLES2PixelSpanInfo *psSpanInfo)
 	IMG_UINT32 i;
 	const IMG_UINT16 *pui16InData = (const IMG_UINT16 *) psSpanInfo->pvInData;
 	IMG_UINT16 *pui16OutData = (IMG_UINT16 *) psSpanInfo->pvOutData;
+	if(!psSpanInfo->ui32Width) return;
 
 	/* InData=OutData
 	 */
 	if(psSpanInfo->i32SrcGroupIncrement == (IMG_INT32)sizeof(IMG_UINT16))
 	{
-		GLES2MemCopy(psSpanInfo->pvOutData, psSpanInfo->pvInData, psSpanInfo->ui32Width * sizeof(IMG_UINT16));
+		CopyNativeSpan(psSpanInfo->pvOutData, psSpanInfo->pvInData, psSpanInfo->ui32Width * sizeof(IMG_UINT16));
 	}
 	else
 	{
@@ -75,13 +85,14 @@ IMG_INTERNAL IMG_VOID SpanPack32(const GLES2PixelSpanInfo *psSpanInfo)
 	IMG_UINT32 i;
 	const IMG_UINT32 *pui32InData = (const IMG_UINT32 *) psSpanInfo->pvInData;
 	IMG_UINT32 *pui32OutData = (IMG_UINT32 *) psSpanInfo->pvOutData;
+	if(!psSpanInfo->ui32Width) return;
 
 
 	/* InData=OutData
 	 */
 	if(psSpanInfo->i32SrcGroupIncrement == (IMG_INT32)sizeof(IMG_UINT32))
 	{
-		GLES2MemCopy(psSpanInfo->pvOutData, psSpanInfo->pvInData, psSpanInfo->ui32Width * sizeof(IMG_UINT32));
+		CopyNativeSpan(psSpanInfo->pvOutData, psSpanInfo->pvInData, psSpanInfo->ui32Width * sizeof(IMG_UINT32));
 	}
 	else
 	{

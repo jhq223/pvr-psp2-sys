@@ -762,7 +762,8 @@ static IMG_VOID PrepareTextureDependencies(GLES2Context *gc)
 {
     if(gc->sProgram.psCurrentProgram)
     {
-        IMG_UINT32 stage, i;
+        GLES2Texture *seen[GLES2_MAX_TEXTURE_UNITS * 2];
+        IMG_UINT32 count = 0, stage, i;
         for(stage = 0; stage < 2; ++stage)
         {
             GLES2ProgramShader *shader = stage ? &gc->sProgram.psCurrentProgram->sFragment : &gc->sProgram.psCurrentProgram->sVertex;
@@ -773,7 +774,12 @@ static IMG_VOID PrepareTextureDependencies(GLES2Context *gc)
                     if(sampler->ui8ImageUnit < GLES2_MAX_TEXTURE_UNITS && sampler->ui8SamplerTypeIndex < GLES2_TEXTURE_TARGET_MAX)
                     {
                         GLES2Texture *texture = gc->sTexture.apsBoundTexture[sampler->ui8ImageUnit][sampler->ui8SamplerTypeIndex];
+                        IMG_UINT32 duplicate;
+                        for(duplicate = 0; duplicate < count; ++duplicate)
+                            if(seen[duplicate] == texture) break;
+                        if(duplicate != count) continue;
                         SWTextureWait(gc, texture);
+                        seen[count++] = texture;
                         /* An allocation in another context can evict a bound
                          * texture without changing this context's GL state. */
                         if(!texture->bResidence) gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;

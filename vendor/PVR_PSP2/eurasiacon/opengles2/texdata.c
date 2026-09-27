@@ -54,6 +54,20 @@
                     : in which case, application supplies the texture source data.
 *******************************************************************************************************/
 
+static IMG_BOOL EnsureTextureTransferSync(GLES2Context *gc, GLES2Texture *texture)
+{
+    if(TextureSyncInfo(texture)) return IMG_TRUE;
+    if(!PVR_OPT(7) || !texture->psMemInfo) return IMG_FALSE;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
+#endif
+    SWTextureWait(gc, texture);
+    texture->psMemInfo->psClientSyncInfo = SWTextureAcquireSync(gc);
+    if(!texture->psMemInfo->psClientSyncInfo) return IMG_FALSE;
+    texture->psMemInfo->ui32Flags &= ~PVRSRV_MEM_NO_SYNCOBJ;
+    return IMG_TRUE;
+}
+
 IMG_INTERNAL IMG_BOOL PrepareHWTQTextureUpload(GLES2Context        *gc, 
 											   GLES2Texture        *psTex,
 											   IMG_UINT32           ui32OffsetInBytes,
@@ -100,6 +114,9 @@ IMG_INTERNAL IMG_BOOL PrepareHWTQTextureUpload(GLES2Context        *gc,
 
 	IMG_INT32 i32ClampX0, i32ClampX1, i32ClampY0, i32ClampY1;
 
+
+    /* No fence means that this texture must use the software upload path. */
+    if(!EnsureTextureTransferSync(gc, psTex)) return IMG_FALSE;
 
 	/* Assert HWTQTextureUpload is enabled */
 	GLES_ASSERT(!gc->sAppHints.bDisableHWTQTextureUpload);
@@ -625,6 +642,7 @@ IMG_INTERNAL IMG_BOOL HWTQTextureUpload(GLES2Context *gc,
 #endif
 
 	eResult = SGXQueueTransfer(&gc->psSysContext->s3D, gc->psSysContext->hTransferContext, psQueueTransfer);
+    SWTextureTransferSubmitted(gc);
 
 	if(eResult != PVRSRV_OK)
 	{
@@ -737,6 +755,8 @@ IMG_INTERNAL IMG_BOOL PrepareHWTQTextureNormalBlit(GLES2Context        *gc,
 
 	IMG_INT32 i32ClampX0, i32ClampX1, i32ClampY0, i32ClampY1;
 
+
+    if(!psSrcReadParams->psSyncInfo || !EnsureTextureTransferSync(gc, psDstTex)) return IMG_FALSE;
 
 	/* Assert psSrcReadInfo is not NULL */
 	GLES_ASSERT(psSrcReadInfo);
@@ -1288,6 +1308,7 @@ IMG_INTERNAL IMG_BOOL HWTQTextureNormalBlit(GLES2Context      *gc,
 #endif
 
 	eResult = SGXQueueTransfer(&gc->psSysContext->s3D, gc->psSysContext->hTransferContext, psQueueTransfer);
+    SWTextureTransferSubmitted(gc);
 
 	if(eResult != PVRSRV_OK)
 	{
@@ -1378,6 +1399,8 @@ static IMG_BOOL PrepareHWTQTextureBufferBlit(GLES2Context           *gc,
 											 IMG_UINT32              ui32SizeInBytes,
 											 SGX_QUEUETRANSFER      *psQueueTransfer) 
 {
+
+    if(!TextureSyncInfo(psDstTex) || !psSrcInfo->psClientSyncInfo) return IMG_FALSE;
 
 	/* Assert HWTQNormalBlit is enabled */
 	GLES_ASSERT(!gc->sAppHints.bDisableHWTQBufferBlit);
@@ -1470,6 +1493,7 @@ static IMG_BOOL HWTQTextureBufferBlit(GLES2Context           *gc,
 	PVRSRV_ERROR eResult;
 
 	eResult = SGXQueueTransfer(&gc->psSysContext->s3D, gc->psSysContext->hTransferContext, psQueueTransfer);
+    SWTextureTransferSubmitted(gc);
 
 	if(eResult != PVRSRV_OK)
 	{

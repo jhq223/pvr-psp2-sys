@@ -15,8 +15,18 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
     let root = root
         .canonicalize()
         .map_err(|e| format!("{}: {e}", root.display()))?;
+    let root = if cfg!(windows) {
+        std::path::PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\"))
+    } else {
+        root
+    };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let output = output.canonicalize().map_err(|e| e.to_string())?;
+    let output = if cfg!(windows) {
+        std::path::PathBuf::from(output.to_string_lossy().trim_start_matches(r"\\?\"))
+    } else {
+        output
+    };
     let source_path = root.join("vendor/PVR_PSP2/eurasiacon/imgegl/imgegl/srv.c");
     let source = fs::read_to_string(&source_path)
         .map_err(|e| format!("{}: {e}", source_path.display()))?

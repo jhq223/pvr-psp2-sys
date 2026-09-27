@@ -1,4 +1,5 @@
 #include <assert.h>
+#include "psp2/optimization.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,6 +44,7 @@ typedef struct { Manager *psTextureManager; int hSecondaryLock; } Shared;
 typedef struct { Shared *psSharedState; } GLES2Context;
 static KRMResource *pending;
 static int allocation_failed, device_live, images_live, error, probe_reclaim, deferred_reclaims;
+static int render_queued, render_submitted, submit_calls;
 static void *GLES2Calloc(GLES2Context *gc, size_t n) { (void)gc; return allocation_failed ? NULL : calloc(1,n); }
 static void GLES2Free(GLES2Context *gc, void *p) { (void)gc; free(p); }
 static void GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_MEM_INFO *p) { (void)gc; assert(p); --device_live; free(p); }
@@ -53,6 +55,29 @@ static void KRM_GhostResource(int *m, KRMResource *original, KRMResource *ghost)
 static void KRM_RemoveResourceFromAllLists(int *m,KRMResource *r) { (void)m;assert(r!=pending); }
 static void KEGLUnbindImage(void *h) { assert(h);--images_live; }
 static void FlushUnflushedTextureRenders(GLES2Context *gc,GLES2Texture *t) { (void)gc;(void)t; }
+/* A texture sampled by an offscreen FBO is not itself a render target.
+ * Flushing renders into that texture cannot submit its pending readers. */
+static int FlushAllUnflushedFBO(GLES2Context *gc, int wait) {
+    (void)gc;
+    assert(!wait); /* Deletion submits work without a synchronous GPU wait. */
+    ++submit_calls;
+    if(render_queued) {
+        assert(pending && pending->ui32Waiters == 1);
+        render_queued=0;
+        render_submitted=1;
+    }
+    return 1;
+}
+static unsigned unrelated_queued;
+static void KickUnFlushed_ScheduleTA(void *gc, void *surface) { (void)gc; (void)surface; }
+static int KRM_FlushUnKickedResource(int *m, KRMResource *r, void *gc, void (*schedule)(void *, void *)) {
+    (void)m; (void)schedule;
+    assert(r == pending && r->ui32Waiters == 1);
+    unsigned before = unrelated_queued;
+    int result = FlushAllUnflushedFBO(gc, 0); /* Mock only the identified reader's submission. */
+    assert(unrelated_queued == before);
+    return result;
+}
 static void DestroyFBOAttachableRenderSurface(GLES2Context *gc,GLES2FrameBufferAttachable *a) {
     (void)gc;(void)a;
     if(probe_reclaim && pending) { pending->needed=0; assert(pending->ui32Waiters==1); ++deferred_reclaims; }
@@ -89,5 +114,25 @@ int main(void) {
     EGLImage image={NULL,(void *)1,8,4};t->psEGLImageTarget=&image;++images_live;
     allocation_failed=1;assert(!TexMgrGhostTexture(&gc,t));assert(t->psEGLImageTarget==&image && images_live==1);
     FreeTexture(&gc,t);assert(images_live==1 && pending);collect(&gc);assert(!images_live && !device_live && !manager.ui32GhostMem);
-    puts("texture lifetime: allocation failure, embedded deletion, concurrent reclaim pin and EGL image ownership passed");
+    /* GPU completion cannot retire a reader that was never submitted. Keep
+     * repeating deletion with a bounded number of live storage allocations. */
+    allocation_failed=0;
+    int before=submit_calls;
+    for(unsigned i=0; i<160; ++i) {
+        t=make_texture(1);
+        t->ui32NumRenderTargets=0;
+        render_queued=1;render_submitted=0; unrelated_queued=7;
+        FreeTexture(&gc,t);
+        assert(pending && device_live==1 && manager.ui32GhostMem==32);
+        assert(!pending->ui32Waiters);
+        if(render_submitted) pending->needed=0; /* Simulated GPU completion. */
+        assert(!pending->needed && !render_queued);
+        collect(&gc);
+        assert(!device_live && !manager.ui32GhostMem);
+    }
+    assert(submit_calls==before+160);
+    before=submit_calls;
+    t=make_texture(0);FreeTexture(&gc,t);
+    assert(submit_calls==before && !device_live); /* Idle deletion needs no kick. */
+    puts("texture lifetime: allocation failure, deletion pins, EGL ownership and offscreen reader retirement passed");
 }

@@ -29,6 +29,7 @@
 
 #include "usegen.h"
 #include "render_target_alloc.h"
+#include "render_command_alloc.h"
 /******************************************************************************
  Function Name      : SRV_SGXServicesInit
  Inputs             : psSysContext
@@ -494,6 +495,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 												  EGLRenderSurface *psSurface)
 {
 	SGX_ADDRENDTARG sAddRenderTarget;
+    PVRSRV_ERROR error;
 	CircularBuffer *psBuffer;
 	PVRSRV_CLIENT_MEM_INFO *psMemInfo;
 	IMG_UINT32 ui32MultiSample, ui32Align, ui32Size, ui32RTIndex, ui32DriverMemSize;
@@ -535,8 +537,10 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	
 	psSurface->bNeedZSLoadAfterOverflowRender = IMG_FALSE;
 
-	if(PVRSRVCreateMutex(&psSurface->hMutex) != PVRSRV_OK)
-	{
+	error = PVRSRVCreateMutex(&psSurface->hMutex);
+    if(error != PVRSRV_OK)
+    {
+        KrkrRenderFailure("surface-mutex", (unsigned)error, 0);
 		goto fail_mutex;
 	}
 
@@ -595,23 +599,27 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	}
 
 	/* Alloc syncinfo. */
-	if(PVRSRVAllocSyncInfo(&psSysContext->s3D, &psSurface->psRenderSurfaceSyncInfo) != PVRSRV_OK)
-	{
+	error = PVRSRVAllocSyncInfo(&psSysContext->s3D, &psSurface->psRenderSurfaceSyncInfo);
+    if(error != PVRSRV_OK)
+    {
+        KrkrRenderFailure("surface-sync", (unsigned)error, 0);
 		goto fail_syncinfo_alloc;
 	}
 
 	/* Set up the sync info pointers.  psSyncInfo defaults to the sync info for the render surface */
 	psSurface->psSyncInfo				= psSurface->psRenderSurfaceSyncInfo;
 
-	if (IMGEGLALLOCDEVICEMEM(	&psSysContext->s3D,
+	error = IMGEGLALLOCDEVICEMEM(	&psSysContext->s3D,
 								psSysContext->hSyncInfoHeap,
 								PVRSRV_MEM_WRITE | PVRSRV_MEM_READ | PVRSRV_MEM_NO_SYNCOBJ | PVRSRV_MEM_CACHE_CONSISTENT,
 								4,
 								0,
-								&psSurface->sRenderStatusUpdate.psMemInfo) != PVRSRV_OK)
-	{
-		goto fail_statusval_alloc;
-	}
+								&psSurface->sRenderStatusUpdate.psMemInfo);
+    if(error != PVRSRV_OK)
+    {
+        KrkrRenderFailure("statusval-alloc", (unsigned)error, 4);
+        goto fail_statusval_alloc;
+    }
 
 	PVRSRVMemSet(psSurface->sRenderStatusUpdate.psMemInfo->pvLinAddr, 0, 4);
 
@@ -630,8 +638,8 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 
 	psBuffer = &psSurface->sPDSBuffer;
 
-	if(IMGEGLALLOCDEVICEMEM(&psSysContext->s3D, psSysContext->hPDSFragmentHeap, PVRSRV_MEM_READ,
-							ui32Size, ui32Align, &psMemInfo) != PVRSRV_OK)
+	if(KrkrAllocRenderCommandBuffer(psSysContext, &psSysContext->s3D, psSysContext->hPDSFragmentHeap,
+                            ui32Size, ui32Align, &psMemInfo, "pds-command") != PVRSRV_OK)
 	{
 		goto fail_pds_buffer_alloc;
 	}
@@ -660,15 +668,17 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	ui32Size = 1024;
 
 	/* Allocate device memory for status update */
-	if(IMGEGLALLOCDEVICEMEM(&psSysContext->s3D,
+	error = IMGEGLALLOCDEVICEMEM(&psSysContext->s3D,
 	                        psSysContext->hSyncInfoHeap,
 							PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MEM_NO_SYNCOBJ | PVRSRV_MEM_CACHE_CONSISTENT,
 							4,
 							4,
-							&psBuffer->psStatusUpdateMemInfo) != PVRSRV_OK)
-	{
-		goto fail_pds_status_alloc;
-	}
+							&psBuffer->psStatusUpdateMemInfo);
+    if(error != PVRSRV_OK)
+    {
+        KrkrRenderFailure("pds-status-alloc", (unsigned)error, 4);
+        goto fail_pds_status_alloc;
+    }
 	PVRSRVMemSet(psBuffer->psStatusUpdateMemInfo->pvLinAddr, 0, 4);
 	psBuffer->pui32ReadOffset = (IMG_UINT32*)psBuffer->psStatusUpdateMemInfo->pvLinAddr;
 
@@ -683,8 +693,8 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 
 	psBuffer = &psSurface->sUSSEBuffer;
 
-	if(IMGEGLALLOCDEVICEMEM(&psSysContext->s3D, psSysContext->hUSEFragmentHeap, PVRSRV_MEM_READ,
-							ui32Size, ui32Align, &psMemInfo) != PVRSRV_OK)
+	if(KrkrAllocRenderCommandBuffer(psSysContext, &psSysContext->s3D, psSysContext->hUSEFragmentHeap,
+                            ui32Size, ui32Align, &psMemInfo, "usse-command") != PVRSRV_OK)
 	{
 		goto fail_usse_buffer_alloc;
 	}
@@ -706,15 +716,17 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	psBuffer->psDevData					= &psSysContext->s3D;
 
 	/* Allocate device memory for status update */
-	if(IMGEGLALLOCDEVICEMEM(&psSysContext->s3D,
+	error = IMGEGLALLOCDEVICEMEM(&psSysContext->s3D,
 	                        psSysContext->hSyncInfoHeap,
 							PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MEM_NO_SYNCOBJ | PVRSRV_MEM_CACHE_CONSISTENT,
 							4,
 							4,
-							&psBuffer->psStatusUpdateMemInfo) != PVRSRV_OK)
-	{
-		goto fail_usse_status_alloc;
-	}
+							&psBuffer->psStatusUpdateMemInfo);
+    if(error != PVRSRV_OK)
+    {
+        KrkrRenderFailure("usse-status-alloc", (unsigned)error, 4);
+        goto fail_usse_status_alloc;
+    }
 	PVRSRVMemSet(psBuffer->psStatusUpdateMemInfo->pvLinAddr, 0, 4);
 	psBuffer->pui32ReadOffset = (IMG_UINT32*)psBuffer->psStatusUpdateMemInfo->pvLinAddr;
 
@@ -729,6 +741,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 
 	if(!SetupTerminateBuffers(psSysContext, &psSurface->sTerm))
 	{
+        KrkrRenderFailure("terminate-setup", (unsigned)PVRSRV_ERROR_OUT_OF_MEMORY, 0);
 		goto fail_terminate_alloc;
 	}
 

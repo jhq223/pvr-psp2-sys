@@ -32,6 +32,7 @@
 #include <sceerror.h>
 #include "libheap_custom.h"
 #include "heaplib_internal.h"
+#include "optimization.h"
 #include "services.h"
 #include "img_types.h"
 #include "psp2_pvr_defs.h"
@@ -204,6 +205,41 @@ int sceHeapDeleteHeap(void *heap)
 }
 
 
+/* Drop only an empty mapped block. Caller holds the heap lock. */
+static unsigned int TrimSpare(SceHeapWorkInternal *head)
+{
+    SceHeapMspaceLink *hp = head->spare;
+    void *base;
+    SceUID uid;
+    unsigned int bytes;
+    if(!hp) return 0;
+    uid = hp->uid;
+    bytes = ALIGN(hp->size + sizeof(*hp), head->memblockType == SCE_HEAP_OPT_MEMBLOCK_TYPE_CDRAM ? 256 * 1024 : 4096);
+    if(sceKernelGetMemBlockBase(uid, &base) < 0) return 0;
+    head->spare = SCE_NULL;
+    hp->next->prev = hp->prev;
+    hp->prev->next = hp->next;
+#if USE_HEAPINFO
+    --head->info.hblks;
+    head->info.arena -= bytes;
+#endif
+    sceClibMspaceDestroy(hp->msp);
+    PVRSRVUnmapMemoryFromGpu(st_psDevData, base, 0, IMG_FALSE);
+    sceKernelFreeMemBlock(uid);
+    return bytes;
+}
+
+unsigned int sceHeapTrimEmpty(void *heap)
+{
+    SceHeapWorkInternal *head = (SceHeapWorkInternal *)heap;
+    unsigned int bytes;
+    if(!head || head->magic != (SceUIntPtr)(head + 1)) return 0;
+    if(sceKernelLockLwMutex(&head->lwmtx, 1, SCE_NULL) < 0) return 0;
+    bytes = TrimSpare(head);
+    sceKernelUnlockLwMutex(&head->lwmtx, 1);
+    return bytes;
+}
+
 //J ヒープメモリからメモリ確保
 //E Allocate memory from heap memory
 void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const SceHeapAllocOptParam *optParam, SceHeapAllocFailure *failure)
@@ -280,6 +316,8 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 			break;
 		}
 	}
+	/* An incompatible spare must not obstruct a larger kernel allocation. */
+	TrimSpare(head);
 	failure->stage = "fixed-heap";
 	if (head->bsize > 3) {
 		//J SCE_HEAP_AUTO_EXTENDを意味している
@@ -474,7 +512,7 @@ int	sceHeapFreeHeapMemory(void *heap, void *ptr)
 			sceClibMspaceFree(hp->msp, ptr);
 
 			if (hp != &head->prim && sceClibMspaceIsHeapEmpty(hp->msp) &&
-                !head->spare && hp->size <= (unsigned int)(head->bsize & ~4095))
+                !head->spare && head->bsize && hp->size + sizeof(*hp) <= (PVR_OPT(5) ? 8U * 1024U * 1024U : (unsigned int)(head->bsize & ~4095)))
                 head->spare = hp;
             if (hp != &head->prim && hp != head->spare && sceClibMspaceIsHeapEmpty(hp->msp)) {
 				//J 双方向リンクリストから抜きます

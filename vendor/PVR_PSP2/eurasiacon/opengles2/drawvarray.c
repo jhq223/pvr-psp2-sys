@@ -2228,10 +2228,10 @@ static IMG_BOOL AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
 				/* PRQA S ??? 1 */ /* ui8SamplerType has been prevalidated in glLinkProgram */
 				psTex = gc->sTexture.apsBoundTexture[ui8ImageUnit][ui8SamplerType];
 				GLES_ASSERT(psTex);
-                SWTextureWait(gc, psTex);
                 IMG_UINT32 duplicate;
                 for(duplicate = 0; duplicate < *seenCount; ++duplicate) if(seen[duplicate] == psTex) break;
                 if(duplicate != *seenCount) continue;
+                SWTextureWait(gc, psTex);
 
                 if(psTex->bResidence)
 				{

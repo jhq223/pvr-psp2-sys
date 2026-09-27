@@ -2848,6 +2848,17 @@ static IMG_VOID RenderbufferStorage(GLenum target, GLsizei samples, GLenum inter
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
 	/* Notify all the framebuffers attached to this renderbuffers about the change */
+    if(PVR_OPT(9) && psRenderBuffer->psMemInfo && psRenderBuffer->eRequestedFormat == internalformat &&
+       psRenderBuffer->ui32Width == (IMG_UINT32)width && psRenderBuffer->ui32Height == (IMG_UINT32)height
+#if defined(GLES2_EXTENSION_MULTISAMPLED_RENDER_TO_TEXTURE)
+       && psRenderBuffer->ui32Samples == (samples ? 4U : 0U)
+#endif
+       )
+    {
+        GLES2_TIME_STOP(GLES2_TIMES_glRenderbufferStorage);
+        return;
+    }
+
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psRenderBuffer);
 
 	ui32BufferSize *= ((IMG_UINT32)width  + EURASIA_TAG_TILE_SIZEX-1) & ~(EURASIA_TAG_TILE_SIZEX-1);

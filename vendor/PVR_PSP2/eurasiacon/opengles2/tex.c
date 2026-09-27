@@ -3467,6 +3467,17 @@ bad_op:
 	/* If the mipmap is attached to any framebuffer, notify it of the change */
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
 
+    if(PVR_OPT(pixels ? 2 : 1) && !ui32Level && (pfnCopyTextureData == (PFNCopyTextureData)CopyTexture32Bits ||
+       pfnCopyTextureData == (PFNCopyTextureData)CopyTexture16Bits ||
+       pfnCopyTextureData == (PFNCopyTextureData)CopyTexture8Bits) &&
+       TextureInitializeStorage(gc, psTex, format, psTexFormat, width, height, pixels,
+           ALIGNCOUNT(width * ui32SrcBytesPerPixel, gc->sState.sClientPixel.ui32UnpackAlignment)))
+    {
+        GLES2_INC_PIXEL_COUNT(GLES2_TIMES_glTexImage2D, width*height);
+        GLES2_TIME_STOP(GLES2_TIMES_glTexImage2D);
+        return;
+    }
+
 	/* Allocate memory for the level data */
 	pui8Dest = TextureCreateLevel(gc, psTex, ui32Level, (IMG_UINT32)format, psTexFormat, (IMG_UINT32)width, (IMG_UINT32)height);
 
@@ -3522,14 +3533,15 @@ static IMG_BOOL UploadIdleTextureRegion(GLES2Context *gc, GLES2Texture *texture,
     IMG_UINT32 layout, type, stride, bytes = texture->psFormat->ui32TotalBytesPerTexel;
     IMG_UINT8 *converted;
     GLES2MipMapLevel region = *level;
-    if(level->ui32Level || texture->ui32TextureTarget != GLES2_TEXTURE_TARGET_2D ||
+    if(!width || !height || !pixels || level->ui32Level || texture->ui32TextureTarget != GLES2_TEXTURE_TARGET_2D ||
        !texture->psMemInfo || texture->psFormat->ui32NumChunks != 1 ||
        (texture->ui32HWFlags & (GLES2_COMPRESSED | GLES2_FLOAT)) || (bytes != 1 && bytes != 2 && bytes != 4)) return IMG_FALSE;
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
     if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
 #endif
     type = texture->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK;
-    if(type == EURASIA_PDS_DOUTT1_TEXTYPE_TILED) layout = 1;
+    if(PVR_OPT(4) && type == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE) layout = 0;
+    else if(type == EURASIA_PDS_DOUTT1_TEXTYPE_TILED) layout = 1;
 #if !defined(SGX_FEATURE_HYBRID_TWIDDLING)
     else if(type == EURASIA_PDS_DOUTT1_TEXTYPE_2D && !(texture->ui32HWFlags & GLES2_NONPOW2)) layout = 2;
 #endif
@@ -3537,7 +3549,28 @@ static IMG_BOOL UploadIdleTextureRegion(GLES2Context *gc, GLES2Texture *texture,
     if(KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &texture->sResource)) return IMG_FALSE;
     if(!FlushAttachableIfNeeded(gc, (GLES2FrameBufferAttachable *)level,
         GLES2_SCHEDULE_HW_LAST_IN_SCENE | GLES2_SCHEDULE_HW_WAIT_FOR_3D)) return IMG_FALSE;
-    if(SGX2DQueryBlitsComplete(gc->ps3DDevData, texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
+    if(texture->psMemInfo->psClientSyncInfo &&
+        SGX2DQueryBlitsComplete(gc->ps3DDevData, texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
+    if(!layout)
+    {
+        IMG_UINT32 row, pitch;
+        IMG_UINT8 *destination;
+        stride = ALIGNCOUNT(width * sourceBytes, gc->sState.sClientPixel.ui32UnpackAlignment);
+#if EURASIA_TAG_STRIDE_THRESHOLD
+        if(level->ui32Width < EURASIA_TAG_STRIDE_THRESHOLD)
+            pitch = ALIGNCOUNT(level->ui32Width, EURASIA_TAG_STRIDE_ALIGN0) * bytes;
+        else
+#endif
+            pitch = ALIGNCOUNT(level->ui32Width, EURASIA_TAG_STRIDE_ALIGN1) * bytes;
+        if((y + height - 1) * pitch + (x + width) * bytes > texture->psMemInfo->uAllocSize)
+            return IMG_FALSE;
+        destination = (IMG_UINT8 *)texture->psMemInfo->pvLinAddr + y * pitch + x * bytes;
+        region.ui32Width = width; region.ui32Height = 1;
+        for(row = 0; row < height; ++row)
+            copy(destination + row * pitch, (const IMG_UINT8 *)pixels + row * stride,
+                 width, 1, stride, &region, IMG_FALSE);
+        return IMG_TRUE;
+    }
     converted = GLES2Malloc(gc, width * height * bytes);
     if(!converted) return IMG_FALSE;
     stride = ALIGNCOUNT(width * sourceBytes, gc->sState.sClientPixel.ui32UnpackAlignment);
@@ -4048,31 +4081,10 @@ bad_op:
 		return;
 	}
 
-	SceKernelMemBlockInfo sMemInfo;
-	PVRSRV_ERROR eCheckRes;
-	sMemInfo.size = sizeof(SceKernelMemBlockInfo);
-	sceKernelGetMemBlockInfoByAddr(pixels, &sMemInfo);
-
-	eCheckRes = PVRSRVCheckMappedMemory(
-		gc->ps3DDevData,
-		gc->psSysContext->hDevMemContext,
-		sMemInfo.mappedBase,
-		sMemInfo.mappedSize,
-		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE
-	);
-
-	if (eCheckRes != PVRSRV_OK)
-	{
-		eCheckRes = PVRSRVMapMemoryToGpu(
-			gc->ps3DDevData,
-			gc->psSysContext->hDevMemContext,
-			0,
-			sMemInfo.mappedSize,
-			0,
-			sMemInfo.mappedBase,
-			PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MEM_USER_SUPPLIED_DEVVADDR,
-			IMG_NULL);
-	}
+	/* Client pixels are consumed by CPU copies before this call returns.
+	 * HWTQ reads driver-owned mapped staging from PrepareHWTQTextureUpload.
+	 * Mapping the caller's entire memblock here would pin storage that the
+	 * driver neither owns nor unmaps, preventing its normal release. */
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
 	if(psTex->psEGLImageTarget)
@@ -4163,6 +4175,20 @@ bad_op:
 
 	ui32DstStride = psMipLevel->ui32Width * ui32DstBytesPerPixel;
 	pui8Dest = psMipLevel->pui8Buffer;
+    /* Small updates to idle stride storage do not need a staging allocation,
+     * transfer submission or a newly allocated sync object. Busy storage keeps
+     * the hardware/ghost path and its established dependency ordering. */
+    if(PVR_OPT(4) && pui8Dest == GLES2_LOADED_LEVEL &&
+       (psTex->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK) == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE &&
+       (IMG_UINT32)width * (IMG_UINT32)height * ui32DstBytesPerPixel <= 65536U &&
+       UploadIdleTextureRegion(gc, psTex, psMipLevel, xoffset, yoffset, width, height,
+                               ui32SrcBytesPerPixel, pixels, pfnCopyTextureData))
+    {
+        GLES2_INC_PIXEL_COUNT(GLES2_TIMES_glTexSubImage2D, width*height);
+        GLES2_TIME_STOP(GLES2_TIMES_glTexSubImage2D);
+        return;
+    }
+
 
 
 	/* copy subtexture data into the host memory 
@@ -5328,6 +5354,10 @@ bad_op:
 	 *
 	 *********************************************************************************/
 
+
+    if(PVR_OPT(3) && !gc->sAppHints.bDisableHWTQNormalBlit && !ui32Level &&
+       (internalformat == GL_RGBA || internalformat == GL_RGB))
+        TextureInitializeStorage(gc, psTex, internalformat, psTexFormat, width, height, IMG_NULL, 0);
 
 	/*********** Option 1 : HWTQ Normal Blit Solution ********************/
 

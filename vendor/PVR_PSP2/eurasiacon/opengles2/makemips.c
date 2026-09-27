@@ -66,6 +66,8 @@ static IMG_BOOL HardwareMipGen(GLES2Context *gc,
     IMG_UINT32              ui32MaxDim    = (psLevel->ui32Width > psLevel->ui32Height) ? psLevel->ui32Width : psLevel->ui32Height; 
     IMG_BOOL		        bUnSupported  = IMG_FALSE;
 
+    if(!psTex->psMemInfo || !psTex->psMemInfo->psClientSyncInfo) return IMG_FALSE;
+
     PVR_UNREFERENCED_PARAMETER(gc);
     GLES2MemSet(&mipgenQueueTransfer, 0, sizeof(SGX_QUEUETRANSFER));
 
@@ -154,6 +156,7 @@ static IMG_BOOL HardwareMipGen(GLES2Context *gc,
     mipgenQueueTransfer.asDests[0].eFormat = ePixelFormat;
 
     eResult = SGXQueueTransfer(&gc->psSysContext->s3D, gc->psSysContext->hTransferContext, &mipgenQueueTransfer);
+    SWTextureTransferSubmitted(gc);
 
     if(eResult != PVRSRV_OK)
     {

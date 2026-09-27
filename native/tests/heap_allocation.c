@@ -1,4 +1,5 @@
 #include <assert.h>
+#include "psp2/optimization.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -75,7 +76,8 @@ static void sceClibMspaceDestroy(void *msp) { assert(mspaces == 1); mspaces--; }
 static void *sceClibMspaceMemalign(void *msp, size_t alignment, size_t bytes) {
     if(msp == &head) return use_primary ? (void *)(&head + 1) : NULL;
     if(failure == FAIL_ALLOC) return NULL;
-    assert(mspaces == 1 && bytes + 1024 <= block_size);
+    assert(mspaces == 1);
+    if(bytes + 1024 > block_size) return NULL;
     allocs++; return (void *)ALIGN((uintptr_t)msp + 1024, alignment);
 }
 static void *sceClibMspaceMalloc(void *msp, size_t bytes) {
@@ -134,4 +136,5 @@ int main(void) {
     assert(!sceHeapAllocHeapMemoryWithReport(&head, UINT32_MAX, NULL, &report));
     assert(!strcmp(report.stage, "argument") && !head.lwmtx.locked);
     puts("heap allocation: every extension failure rolls back storage, mapping, links and counts");
+    return 0;
 }

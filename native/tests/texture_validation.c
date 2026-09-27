@@ -1,4 +1,6 @@
 #include <assert.h>
+#define PVRSRV_MAP_GC_MMU 4
+#define PVR_OPT(n) 1
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -51,7 +53,7 @@ typedef int IMG_BOOL;
 #define EURASIA_PDS_DOUTT2_TEXADDR_SHIFT 0
 #define GLES2_LOADED_LEVEL ((unsigned char *)(uintptr_t)1)
 typedef struct { unsigned ui32FirstAttachment, ui32Waiters; } KRMResource;
-typedef struct { struct { unsigned uiAddr; } sDevVAddr; } PVRSRV_CLIENT_MEM_INFO;
+typedef struct { struct { unsigned uiAddr; } sDevVAddr; unsigned uAllocSize, ui32Flags; } PVRSRV_CLIENT_MEM_INFO;
 typedef struct { unsigned ui32TotalBytesPerTexel, ui32NumChunks; } GLES2TextureFormat;
 typedef struct { void *psRenderSurface; } GLES2FrameBufferAttachable;
 typedef struct {
@@ -91,14 +93,16 @@ typedef struct {
     struct { GLES2CompiledTextureState sVertexTextureState, sFragmentTextureState; } sPrim;
     struct { GLES2Texture *apsBoundTexture[4][3]; } sTexture;
     struct { unsigned ui32OverloadTexLayout; } sAppHints;
+    unsigned ui32TextureReclaimBudget, ui32TextureReclaimed;
+    int bTextureReclaimLimited;
 } GLES2Context;
 static GLES2TextureFormat TexFormatABGR8888 = {4,1};
 static GLES2Texture *victim;
-static int pressure, freed, lock_depth, error, fail_allocation, reset_resource;
+static int pressure, freed, lock_depth, error, fail_allocation, reset_resource, waits;
 static void PVRSRVLockMutex(int lock) { (void)lock; assert(!lock_depth++); }
 static void PVRSRVUnlockMutex(int lock) { (void)lock; assert(lock_depth-- == 1); }
 static int SWTextureBusy(GLES2Context *gc, GLES2Texture *t) { (void)gc; (void)t; return 0; }
-static void SWTextureWait(GLES2Context *gc, GLES2Texture *t) { (void)gc; assert(t); }
+static void SWTextureWait(GLES2Context *gc, GLES2Texture *t) { (void)gc; assert(t); ++waits; }
 static void FlushUnflushedTextureRenders(GLES2Context *gc,GLES2Texture *t) { (void)gc;(void)t; }
 static int FlushAttachableIfNeeded(GLES2Context *gc,GLES2FrameBufferAttachable *a,unsigned flags) { (void)gc;(void)a;(void)flags; return 1; }
 static void *GLES2MallocHeapUNC(GLES2Context *gc,size_t n) { (void)gc; return malloc(n); }
@@ -160,17 +164,31 @@ static void check_validation(unsigned first_stage, unsigned second_stage, int du
     assert(error == (fail ? GL_OUT_OF_MEMORY : 0));
     /* After validation, unused storage remains reclaimable and invalidates cached state. */
     gc.ui32DirtyState=0;
+    gc.bTextureReclaimLimited=1; gc.ui32TextureReclaimBudget=16;
+    tex[0].psMemInfo->uAllocSize=16;
+    ReclaimTextureMemKRM(&gc,&tex[0].sResource); /* USER -> USER cannot help. */
+    assert(!freed && tex[0].psMemInfo);
+    tex[0].psMemInfo->ui32Flags=PVRSRV_MAP_GC_MMU;
+    gc.ui32TextureReclaimed=16;
+    ReclaimTextureMemKRM(&gc,&tex[0].sResource); /* Reached the byte budget. */
+    assert(!freed && tex[0].psMemInfo);
+    gc.ui32TextureReclaimed=0;
     ReclaimTextureMemKRM(&gc,&tex[0].sResource);
+    assert(gc.ui32TextureReclaimed==16);
+    gc.bTextureReclaimLimited=0;
     assert(freed==1 && !tex[0].psMemInfo && !tex[0].bResidence);
     assert(gc.ui32DirtyState & GLES2_DIRTYFLAG_TEXTURE_STATE);
     /* Eviction by a shared context may leave this context's own dirty bits clear. */
-    gc.ui32DirtyState=0;
+    gc.ui32DirtyState=0; waits=0;
     PrepareTextureDependencies(&gc);
-    assert(gc.ui32DirtyState & GLES2_DIRTYFLAG_TEXTURE_STATE);
+    assert(waits==2 && (gc.ui32DirtyState & GLES2_DIRTYFLAG_TEXTURE_STATE));
     tex[0].bResidence=tex[1].bResidence=1;
-    gc.ui32DirtyState=0;
+    gc.ui32DirtyState=0; waits=0;
     PrepareTextureDependencies(&gc);
-    assert(!gc.ui32DirtyState);
+    assert(waits==2 && !gc.ui32DirtyState);
+    gc.sProgram.psCurrentProgram=NULL; waits=0;
+    PrepareTextureDependencies(&gc);
+    assert(!waits);
     dispose(&tex[0]);dispose(&tex[1]);
 }
 int main(void) {

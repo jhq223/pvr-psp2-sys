@@ -48,7 +48,10 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV
 SGXGetRenderTargetMemSize(SGX_ADDRENDTARG *psAddRTInfo, IMG_UINT32 *pui32MemSize)
 {
 #ifdef USE_GXM_RT_SIZE_CALC
-	SceGxmRenderTargetParams sRtTmpParam;
+    SceGxmRenderTargetParams sRtTmpParam = {0};
+    int result;
+    if(!psAddRTInfo || !pui32MemSize) return PVRSRV_ERROR_INVALID_PARAMS;
+    *pui32MemSize = 0;
 
 	if (psAddRTInfo->ui16MSAASamplesInX == 2)
 	{
@@ -65,7 +68,15 @@ SGXGetRenderTargetMemSize(SGX_ADDRENDTARG *psAddRTInfo, IMG_UINT32 *pui32MemSize
 	sRtTmpParam.width = psAddRTInfo->ui32NumPixelsX;
 	sRtTmpParam.height = psAddRTInfo->ui32NumPixelsY;
 	sRtTmpParam.multisampleLocations = 0;
-	sceGxmGetRenderTargetMemSize(&sRtTmpParam, pui32MemSize);
+    result = sceGxmGetRenderTargetMemSize(&sRtTmpParam, pui32MemSize);
+    if(result < 0)
+    {
+        sceClibPrintf("[PVR][RTSIZE] error=0x%X size=%ux%u samples=%ux%u\n", (unsigned)result,
+            psAddRTInfo->ui32NumPixelsX, psAddRTInfo->ui32NumPixelsY,
+            psAddRTInfo->ui16MSAASamplesInX, psAddRTInfo->ui16MSAASamplesInY);
+        *pui32MemSize = 0;
+        return PVRSRV_ERROR_INVALID_PARAMS;
+    }
 
 	return PVRSRV_OK;
 

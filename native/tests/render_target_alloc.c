@@ -6,10 +6,12 @@
 typedef unsigned IMG_UINT32;
 typedef unsigned IMG_SID;
 typedef int SceUID;
+typedef int PVRSRV_ERROR;
+#define sceClibPrintf(...) ((void)0)
 typedef int IMG_BOOL;
 typedef void *IMG_HANDLE;
 typedef struct { int s3D; } SrvSysContext;
-typedef struct { int i32DataMemblockUID; unsigned hMemBlockProcRef; } SGX_ADDRENDTARG;
+typedef struct { int i32DataMemblockUID; unsigned hMemBlockProcRef, ui32NumPixelsX, ui32NumPixelsY, ui32NumRTData, ui32MaxQueuedRenders; } SGX_ADDRENDTARG;
 #define IMG_NULL NULL
 #define SCE_NULL NULL
 #define IMG_TRUE 1

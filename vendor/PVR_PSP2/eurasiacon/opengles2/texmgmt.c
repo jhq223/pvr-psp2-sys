@@ -263,6 +263,12 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 	GLES2MipMapLevel *psLevel;
 
     if(psTex->ui32ValidationPins || SWTextureBusy(gc, psTex)) return;
+    /* Eviction can move CDRAM contents to USER. Moving USER to USER cannot
+     * cure USER pressure and would add another full-size peak allocation. */
+    if(gc->bTextureReclaimLimited && (!psTex->psMemInfo ||
+       !(psTex->psMemInfo->ui32Flags & PVRSRV_MAP_GC_MMU) ||
+       gc->ui32TextureReclaimed >= gc->ui32TextureReclaimBudget)) return;
+
 
 	GLES_ASSERT(psResource);
 
@@ -286,7 +292,7 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 		{
 			for(ui32Lod = 0; ui32Lod < GLES2_MAX_TEXTURE_MIPMAP_LEVELS; ui32Lod++)
 			{
-				psLevel = &psTex->psMipLevel[ui32Lod];
+				psLevel = &psTex->psMipLevel[ui32Face * GLES2_MAX_TEXTURE_MIPMAP_LEVELS + ui32Lod];
 
 				/* If the mipmap has already been loaded it must be read back */
 				if(psLevel->pui8Buffer == GLES2_LOADED_LEVEL)
@@ -322,6 +328,8 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 		while( (psTex->ui32TextureTarget == GLES2_TEXTURE_TARGET_CEM) && (++ui32Face < GLES2_TEXTURE_CEM_FACE_MAX) );
 
 		/* After all mipmaps have been read back, free the texture's device mem and mark it as non-resident */
+        if(gc->bTextureReclaimLimited)
+            gc->ui32TextureReclaimed += psTex->psMemInfo->uAllocSize;
 		GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
 		psTex->psMemInfo  = IMG_NULL;
 		psTex->bResidence = IMG_FALSE;
@@ -403,7 +411,12 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 		ui32BytesPerChunk = 4;
 	}
 
-	if(psTex->ui32HWFlags & GLES2_NONPOW2)
+	/* Forced stride/tiled layouts need row/tile padding even for POT images.
+	 * A 4x4 RGBA stride upload uses 8 pixels per row, not a packed 64 bytes. */
+	if((psTex->ui32HWFlags & GLES2_NONPOW2) ||
+	   (!(psTex->ui32HWFlags & GLES2_COMPRESSED) &&
+	    (((psTex->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK) == EURASIA_PDS_DOUTT1_TEXTYPE_STRIDE) ||
+	     ((psTex->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK) == EURASIA_PDS_DOUTT1_TEXTYPE_TILED))))
 	{
 		IMG_UINT32 ui32MipChainSize;
 
@@ -511,7 +524,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 		}
 	}
 
-	eError = GLES2AllocDeviceMemHeapWithReport(gc,
+	eError = GLES2AllocTextureMemWithReport(gc,
 		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MAP_GC_MMU,
 		ui32TexSize,
 		ui32TexAlign,
@@ -519,7 +532,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 
 	if (eError != PVRSRV_OK)
 	{
-		eError = GLES2AllocDeviceMemHeapWithReport(gc,
+		eError = GLES2AllocTextureMemWithReport(gc,
 			PVRSRV_MEM_READ | PVRSRV_MEM_WRITE,
 			ui32TexSize,
 			ui32TexAlign,
@@ -530,10 +543,25 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 	{
 		PVR_DPF((PVR_DBG_WARNING,"CreateTextureMemory: Reaping active textures"));
 
-		KRM_DestroyUnneededGhosts(gc, &psTexMgr->sKRM);
-		KRM_ReclaimUnneededResources(gc, &psTexMgr->sKRM);
+        KRM_DestroyUnneededGhosts(gc, &psTexMgr->sKRM);
+        SWTextureTrimStaging(gc);
+        sceHeapTrimEmpty(gc->pvUNCHeap);
+        sceHeapTrimEmpty(gc->pvCDRAMHeap);
+        eError = GLES2AllocTextureMemWithReport(gc,
+            PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MAP_GC_MMU,
+            ui32TexSize, ui32TexAlign, &psTex->psMemInfo, &failures[2]);
+        if(eError != PVRSRV_OK)
+            eError = GLES2AllocTextureMemWithReport(gc, PVRSRV_MEM_READ | PVRSRV_MEM_WRITE,
+                ui32TexSize, ui32TexAlign, &psTex->psMemInfo, &failures[3]);
+        if(eError == PVRSRV_OK) goto allocated;
+        gc->ui32TextureReclaimBudget = ui32TexSize;
+        gc->ui32TextureReclaimed = 0;
+        gc->bTextureReclaimLimited = PVR_OPT(10);
+        KRM_ReclaimUnneededResources(gc, &psTexMgr->sKRM);
+        gc->bTextureReclaimLimited = IMG_FALSE;
+        sceHeapTrimEmpty(gc->pvCDRAMHeap);
 
-		eError = GLES2AllocDeviceMemHeapWithReport(gc,
+		eError = GLES2AllocTextureMemWithReport(gc,
 			PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MAP_GC_MMU,
 			ui32TexSize,
 			ui32TexAlign,
@@ -541,7 +569,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 
 		if (eError != PVRSRV_OK)
 		{
-			eError = GLES2AllocDeviceMemHeapWithReport(gc,
+			eError = GLES2AllocTextureMemWithReport(gc,
 				PVRSRV_MEM_READ | PVRSRV_MEM_WRITE,
 				ui32TexSize,
 				ui32TexAlign,
@@ -578,6 +606,7 @@ IMG_INTERNAL IMG_BOOL  CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex
 
 	}
 
+allocated:
 #if (defined(DEBUG) || defined(TIMING))
 	ui32TextureMemCurrent += psTex->psMemInfo->uAllocSize;
 
@@ -2403,13 +2432,74 @@ static IMG_VOID SetupEGLImageArbitraryStride(GLES2Texture *psTex, IMG_UINT32 *pu
  Description        : (Re)Allocates host memory for a new texture level.
 ************************************************************************************/
 /* BC input already has the GPU layout. Allocate its final storage before copying. */
+
+/* A new single-level image can live only in its final allocation. The client
+ * pointer is consumed synchronously; no worker may retain it after return.
+ * Existing images, mip chains and conversions retain the general path. */
+IMG_INTERNAL IMG_BOOL TextureInitializeStorage(GLES2Context *gc, GLES2Texture *texture,
+    GLenum requested, const GLES2TextureFormat *format, IMG_UINT32 width,
+    IMG_UINT32 height, const IMG_VOID *pixels, IMG_UINT32 sourceStride)
+{
+    GLES2Texture candidate = {0};
+    GLES2MipMapLevel level = {0}, *old = &texture->psMipLevel[0];
+    IMG_UINT32 i, bytes = format->ui32TotalBytesPerTexel;
+    if(!width || !height || texture->ui32TextureTarget != GLES2_TEXTURE_TARGET_2D ||
+       texture->psMemInfo || GLES2_IS_MIPMAP(texture->sState.ui32MinFilter) ||
+       format->ui32NumChunks != 1 || (bytes != 1 && bytes != 2 && bytes != 4) ||
+       (pixels && sourceStride != width * bytes)) return IMG_FALSE;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
+#endif
+    for(i = 0; i < GLES2_MAX_TEXTURE_MIPMAP_LEVELS; ++i)
+        if(texture->psMipLevel[i].pui8Buffer || texture->psMipLevel[i].ui32Width ||
+           texture->psMipLevel[i].ui32Height) return IMG_FALSE;
+    candidate.sState = texture->sState;
+    candidate.ui32TextureTarget = GLES2_TEXTURE_TARGET_2D;
+    candidate.ui32LevelsConsistent = GLES2_TEX_UNKNOWN;
+    candidate.psMipLevel = &level;
+    candidate.psFormat = format;
+    level.psTex = &candidate;
+    level.ui32Width = width; level.ui32Height = height;
+    level.ui32WidthLog2 = FloorLog2(width); level.ui32HeightLog2 = FloorLog2(height);
+    level.ui32ImageSize = width * height * bytes;
+    level.psTexFormat = format; level.eRequestedFormat = requested;
+    if(IsTextureConsistent(gc, &candidate, gc->sAppHints.ui32OverloadTexLayout, IMG_FALSE) != GLES2_TEX_CONSISTENT ||
+       (candidate.ui32HWFlags & (GLES2_MIPMAP | GLES2_COMPRESSED | GLES2_FLOAT | GLES2_MULTICHUNK))) return IMG_FALSE;
+    if(!CreateTextureMemory(gc, &candidate)) return IMG_FALSE;
+    SetupTwiddleFns(&candidate);
+    if(pixels)
+    {
+        level.pui8Buffer = (IMG_UINT8 *)pixels;
+        TextureUpload(&candidate, &level, 0, (GLES2TextureFormat *)format, 0, 0, width, height);
+    }
+    /* NULL defines unspecified contents. Do not allocate or upload a host copy. */
+    old->pui8Buffer = GLES2_LOADED_LEVEL;
+    old->ui32Width = width; old->ui32Height = height;
+    old->ui32WidthLog2 = level.ui32WidthLog2; old->ui32HeightLog2 = level.ui32HeightLog2;
+    old->ui32ImageSize = level.ui32ImageSize;
+    old->psTexFormat = format; old->eRequestedFormat = requested;
+    texture->psMemInfo = candidate.psMemInfo;
+    texture->psFormat = format;
+    texture->ui32HWFlags = candidate.ui32HWFlags;
+    texture->ui32NumLevels = candidate.ui32NumLevels;
+    texture->ui32ChunkSize = candidate.ui32ChunkSize;
+    texture->ui32LevelsConsistent = GLES2_TEX_UNKNOWN;
+    texture->sState.aui32StateWord1[0] = candidate.sState.aui32StateWord1[0];
+    texture->sState.aui32StateWord2[0] = (candidate.psMemInfo->sDevVAddr.uiAddr >> EURASIA_PDS_DOUTT2_TEXADDR_ALIGNSHIFT)
+        << EURASIA_PDS_DOUTT2_TEXADDR_SHIFT;
+    SetupTwiddleFns(texture);
+    texture->bResidence = IMG_TRUE;
+    gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
+    return IMG_TRUE;
+}
+
 IMG_INTERNAL IMG_BOOL TextureUploadNativeBC(GLES2Context *gc, GLES2Texture *texture, GLenum internalFormat,
     const GLES2TextureFormat *format, IMG_UINT32 width, IMG_UINT32 height, const IMG_VOID *pixels)
 {
     GLES2Texture candidate = {0};
     GLES2MipMapLevel level = {0}, *old = &texture->psMipLevel[0];
     SWTextureWait(gc, texture);
-    if(texture->psMemInfo && SGX2DQueryBlitsComplete(gc->ps3DDevData,
+    if(texture->psMemInfo && texture->psMemInfo->psClientSyncInfo && SGX2DQueryBlitsComplete(gc->ps3DDevData,
         texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
     candidate.sState = texture->sState;
     candidate.ui32TextureTarget = GLES2_TEXTURE_TARGET_2D;
@@ -2785,6 +2875,13 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
         psTex->sDeletionGhost.psOwner = psTex;
         psTex->sDeletionGhost.sResource.ui32Waiters = 1;
         GhostTextureStorage(gc, psTex, &psTex->sDeletionGhost);
+        /* Pending FBO readers retain the ghost even when this texture was
+         * never a render target. Submit them so their KRM dependencies can
+         * retire; keep the deletion pin until object cleanup is complete. */
+        if(psTex->sDeletionGhost.psMemInfo &&
+           (!PVR_OPT(8) || !KRM_FlushUnKickedResource(&gc->psSharedState->psTextureManager->sKRM,
+               &psTex->sDeletionGhost.sResource, gc, KickUnFlushed_ScheduleTA)))
+            FlushAllUnflushedFBO(gc, IMG_FALSE);
 #if defined(GLES2_EXTENSION_TEXTURE_STREAM)
         psTex->psBufferDevice = IMG_NULL;
 #endif

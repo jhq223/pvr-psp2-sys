@@ -1,13 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
-#include <pthread.h>
+#include "thread_compat.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
+
+typedef uintptr_t IMG_UINTPTR_T;
+#include "psp2/optimization.h"
 typedef uint8_t IMG_UINT8;
 typedef uint16_t IMG_UINT16;
 typedef uint32_t IMG_UINT32;
@@ -38,9 +40,9 @@ typedef int PVRSRV_ERROR;
 #define PVR_UNREFERENCED_PARAMETER(x) ((void)(x))
 #define MIN(a,b) ((a)<(b)?(a):(b))
 typedef struct { int unused; } PVRSRV_CLIENT_SYNC_INFO;
-typedef struct { PVRSRV_CLIENT_SYNC_INFO *psClientSyncInfo; } Memory;
-typedef struct { unsigned id; Memory *psMemInfo; int bUploadFailed; } GLES2Texture;
-typedef struct { void *pui8Buffer; } GLES2MipMapLevel;
+typedef struct { PVRSRV_CLIENT_SYNC_INFO *psClientSyncInfo; unsigned uAllocSize; } Memory;
+typedef struct { unsigned id; Memory *psMemInfo; int bUploadFailed; struct TestLevel *psMipLevel; } GLES2Texture;
+typedef struct TestLevel { void *pui8Buffer; unsigned ui32ImageSize; } GLES2MipMapLevel;
 typedef struct { int dummy; } GLES2TextureFormat;
 typedef struct { void *psConnection, *hTransferContext; } System;
 typedef struct { pthread_mutex_t *hPrimaryLock; unsigned ui32RefCount; } Shared;
@@ -151,7 +153,8 @@ static void *GLES2MallocHeapUNC(GLES2Context *gc, unsigned size) { return malloc
 static int SGXWaitTransfer(void *device, void *context) {
     ++waits; while(atomic_load(&hold_transfer)) delay(); return 0;
 }
-static int SGX2DQueryBlitsComplete(void *device, PVRSRV_CLIENT_SYNC_INFO *sync, int wait) { return 0; }
+static int sync_busy;
+static int SGX2DQueryBlitsComplete(void *device, PVRSRV_CLIENT_SYNC_INFO *sync, int wait) { return sync_busy; }
 static void SetError(GLES2Context *gc, unsigned error) { assert(error == GL_OUT_OF_MEMORY); }
 static int PVRSRVCreateSyncInfoModObj(void *connection, unsigned *id) {
     if(atomic_load(&fail_sync) == 1) return -1;
@@ -170,14 +173,18 @@ static void TextureUpload(GLES2Texture *texture, GLES2MipMapLevel *level, unsign
     assert(*(unsigned char *)level->pui8Buffer == 17); ++uploads;
 }
 static void MakeTextureMipmapLevelsSoftware(GLES2Context *gc, GLES2Texture *texture, unsigned face, unsigned maxface, int npot) { ++mipmaps; }
+static int PVRSRVAllocSyncInfo(void *dev, PVRSRV_CLIENT_SYNC_INFO **out) {
+    *out = malloc(sizeof(**out)); assert(*out); ++syncs; return 0;
+}
+static int PVRSRVFreeSyncInfo(void *dev, PVRSRV_CLIENT_SYNC_INFO *sync) { free(sync); --syncs; return 0; }
 #include "swtexop_functions.inc"
 static void clean_handles(void) { for(int i = 1; i < 64; ++i) assert(!handles[i].live); assert(!syncs); }
 static void upload(GLES2Context *gc, GLES2Texture *texture, void *data) {
-    GLES2MipMapLevel level = {data}; GLES2TextureFormat format = {0};
+    GLES2MipMapLevel level = {data, 8}; GLES2TextureFormat format = {0};
     SWTextureUpload(gc, texture, &level, 0, &format, 0, 0, 1, 1);
 }
 int main(void) {
-    alarm(20);
+    alarm(60);
     pthread_mutex_t primary = PTHREAD_MUTEX_INITIALIZER;
     Shared shared = {&primary, 1}; System sys = {0};
     GLES2Context gc = {.psSharedState = &shared, .psSysContext = &sys, .sAppHints = {0, 2, 1, 0, 0}};
@@ -187,7 +194,7 @@ int main(void) {
         assert(!gc.psSWTexture); clean_handles();
     }
     fail_at = 0; calls = 0; assert(SWTextureInit(&gc));
-    PVRSRV_CLIENT_SYNC_INFO sync = {0}; Memory mem = {&sync}; GLES2Texture a = {1, &mem, 0}, b = {2, &mem, 0};
+    PVRSRV_CLIENT_SYNC_INFO sync = {0}; Memory mem = {&sync, 8}; GLES2Texture a = {.id=1, .psMemInfo=&mem}, b = {.id=2, .psMemInfo=&mem};
     unsigned char *source = malloc(8), other = 17; memset(source, 17, 8);
     hold_upload = 1; upload(&gc, &a, source); while(!entered) delay();
     assert(SWTextureBusy(&gc, &a) && !SWTextureBusy(&gc, &b));
@@ -211,6 +218,65 @@ int main(void) {
     SWTextureFreeStaging(&gc, SWTextureAllocStaging(&gc, 17), 17);
     SWTextureStopWorkers(&gc); SWTextureDestroy(&gc);
     assert(!gc.psSWTexture); assert(waits - initial_waits < 11000); clean_handles();
+    /* Bound bytes independently of job count: one held 5 MiB job leaves a
+     * free slot, but a 4 MiB job must execute synchronously. */
+    gc.sAppHints.ui32SwTexOpMaxUltNum = 4;
+    entered=0; release_upload=0; hold_upload=1;
+    assert(SWTextureInit(&gc));
+    unsigned char byte=17;
+    GLES2MipMapLevel large={&byte, 5U*1024U*1024U}; GLES2TextureFormat format={0};
+    SWTextureUpload(&gc,&a,&large,0,&format,0,0,1,1);
+    while(!entered) delay();
+    int uploads_before=uploads;
+    large.ui32ImageSize=4U*1024U*1024U;
+    SWTextureUpload(&gc,&b,&large,0,&format,0,0,1,1);
+    assert(uploads==uploads_before+1 && gc.psSWTexture->active==1);
+    assert(gc.psSWTexture->activeBytes==5U*1024U*1024U);
+    release_upload=1; SWTextureWait(&gc,NULL);
+    assert(!gc.psSWTexture->activeBytes);
+    /* CPU retirement does not call into the GPU, even across many batches. */
+    initial_waits=waits;
+    for(int i=0;i<256;++i) texOpAsyncAddForCleanup(&gc,malloc(8));
+    SWTextureDestroy(&gc); assert(waits==initial_waits); clean_handles();
+    assert(SWTextureInit(&gc));
+    /* While submission has not returned, unrelated CPU buffers can retire.
+     * Publishing the epoch only afterwards must still force a hardware wait. */
+    hold_transfer=1; initial_waits=waits; before=frees;
+    texOpAsyncAddForCleanup(&gc,malloc(8));
+    while(frees==before) delay();
+    assert(waits==initial_waits);
+    SWTextureTransferSubmitted(&gc);
+    void *hardware_source=malloc(8); before=frees;
+    texOpAsyncAddForCleanup(&gc,hardware_source);
+    while(waits==initial_waits) delay();
+    assert(frees==before); hold_transfer=0;
+    while(frees==before) delay();
+    assert(waits==initial_waits+1);
+    for(int i=0;i<128;++i) texOpAsyncAddForCleanup(&gc,malloc(8));
+    /* Completed transfer epochs and idle syncs can be reused. */
+    PVRSRV_CLIENT_SYNC_INFO *cached[12];
+    for(unsigned i=0;i<12;++i) cached[i]=SWTextureAcquireSync(&gc);
+    assert(syncs==12);
+    sync_busy=1;
+    PVRSRV_CLIENT_SYNC_INFO *busy=SWTextureAcquireSync(&gc);
+    SWTextureReleaseSync(&gc,busy);
+    assert(syncs==12 && !gc.psSWTexture->syncCount);
+    sync_busy=0;
+    for(unsigned i=0;i<12;++i) SWTextureReleaseSync(&gc,cached[i]);
+    assert(syncs==SW_SYNC_POOL && gc.psSWTexture->syncCount==SW_SYNC_POOL);
+    for(unsigned i=0;i<SW_SYNC_POOL;++i) cached[i]=SWTextureAcquireSync(&gc);
+    assert(syncs==SW_SYNC_POOL && !gc.psSWTexture->syncCount);
+    for(unsigned i=0;i<SW_SYNC_POOL;++i) SWTextureReleaseSync(&gc,cached[i]);
+    SWTextureDestroy(&gc); assert(waits==initial_waits+1); clean_handles();
+    /* A different sharing context can submit to the same transfer context:
+     * local epoch zero must not suppress its completion wait. */
+    assert(SWTextureInit(&gc)); shared.ui32RefCount=2;
+    hold_transfer=1; initial_waits=waits; before=frees;
+    texOpAsyncAddForCleanup(&gc,malloc(8));
+    while(waits==initial_waits) delay();
+    assert(frees==before);
+    hold_transfer=0; SWTextureDestroy(&gc); clean_handles();
+    shared.ui32RefCount=1;
     assert(!pthread_mutex_destroy(&primary));
     puts("async textures: failure unwind, pool saturation, resource waits, retirement and shutdown passed");
 }

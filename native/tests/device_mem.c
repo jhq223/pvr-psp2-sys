@@ -15,7 +15,9 @@ typedef struct { void *hPerProcRef; } SrvSysContext;
 #define IMG_TRUE 1
 #define IMG_FALSE 0
 #define PVRSRV_OK 0
+#define PVRSRV_MEM_READ 4
 #define PVRSRV_MEM_NO_SYNCOBJ 1
+#define sceClibPrintf(...) ((void)0)
 #define PVRSRV_HAP_NO_GPU_VIRTUAL_ON_ALLOC 2
 
 static int fail_memory, fail_sync, fail_free, memory_count, sync_count;
@@ -60,6 +62,8 @@ static int PVRSRVFreeSyncInfo(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_SYNC_INFO *inf
 
 /* Extracted unchanged from the driver's srv.c by the Rust host checker. */
 #include "device_mem_functions.inc"
+#define IMGEGLALLOCDEVICEMEM(d,h,f,b,a,o) KEGLAllocDeviceMemPsp2(psSysContext,d,h,f,b,a,o)
+#include "../../vendor/PVR_PSP2/eurasiacon/imgegl/imgegl/render_command_alloc.h"
 
 int main(void)
 {
@@ -88,6 +92,19 @@ int main(void)
         assert(!KEGLAllocDeviceMemPsp2(&context, &dev, NULL, PVRSRV_MEM_NO_SYNCOBJ, 1024, 4, &info));
         assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
         assert(!memory_count && !sync_count);
+    }
+    /* Even with sync quota exhausted, both command stores remain allocatable;
+     * a required surface sync must still fail and roll back its allocation. */
+    fail_sync = 1;
+    for(iteration = 0; iteration < 64; ++iteration) {
+        unsigned sizes[] = {32768,1024};
+        for(unsigned j=0;j<2;++j) {
+            assert(KrkrAllocRenderCommandBuffer(&context,&dev,NULL,sizes[j],16,&info,"command") == 0);
+            assert(info && !info->psClientSyncInfo && !sync_count);
+            assert(KEGLFreeDeviceMemPsp2(&context,&dev,info) == 0);
+        }
+        assert(KEGLAllocDeviceMemPsp2(&context,&dev,NULL,PVRSRV_MEM_READ,4,4,&info) == -20);
+        assert(!info && !memory_count && !sync_count);
     }
     puts("device memory: allocation rollback and descriptor lifetime passed");
     return 0;
