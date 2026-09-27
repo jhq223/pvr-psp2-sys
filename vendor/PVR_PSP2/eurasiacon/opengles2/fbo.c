@@ -223,7 +223,8 @@ IMG_INTERNAL IMG_BOOL FlushAllUnflushedFBO(GLES2Context *gc,
 			}
 			else
 			{
-				*ppsFlushList = psFlushItem->psNext;
+				if(!psFlushItem->psNext) gc->psSharedState->ppsFlushTail = ppsFlushList;
+                *ppsFlushList = psFlushItem->psNext;
 				
 				GLES2Free(IMG_NULL, psFlushItem);
 			}

@@ -22,6 +22,7 @@
 
 IMG_EXPORT IMG_VOID IMG_CALLCONV KEGLSetBlob(const IMG_VOID* pvKey, IMG_UINT32 ui32KeySize, const IMG_VOID * pvBlob, IMG_UINT32 ui32BlobSize)
 {
+	EGLSetBlobFunc callback;
 	TLS psTls = IMGEGLGetTLSValue();
 	if (psTls==IMG_NULL)
 	{
@@ -29,19 +30,16 @@ IMG_EXPORT IMG_VOID IMG_CALLCONV KEGLSetBlob(const IMG_VOID* pvKey, IMG_UINT32 u
 		return;
 	}
 		
-	EGLThreadLock(psTls);
-
-	if(psTls->psGlobalData->pfnSetBlob)
-	{
-		psTls->psGlobalData->pfnSetBlob(pvKey, ui32KeySize, pvBlob, ui32BlobSize);
-	}
-
-	EGLThreadUnlock(psTls);
+    EGLThreadLock(psTls);
+    callback = psTls->psGlobalData->pfnSetBlob;
+    EGLThreadUnlock(psTls);
+    if(callback) callback(pvKey, ui32KeySize, pvBlob, ui32BlobSize);
 }
 
 IMG_EXPORT IMG_UINT32 IMG_CALLCONV KEGLGetBlob(const IMG_VOID* pvKey, IMG_UINT32 ui32KeySize, IMG_VOID * pvBlob, IMG_UINT32 ui32BlobSize)
 {
-	IMG_UINT32 ui32ReturnBlobSize = 0;
+	EGLGetBlobFunc callback;
+    IMG_BOOL enabled;
 	TLS psTls = IMGEGLGetTLSValue();
 
 	if (psTls==IMG_NULL)
@@ -50,16 +48,13 @@ IMG_EXPORT IMG_UINT32 IMG_CALLCONV KEGLGetBlob(const IMG_VOID* pvKey, IMG_UINT32
 		return 0;
 	}
 
-	EGLThreadLock(psTls);
-
-	if(psTls->psGlobalData->pfnGetBlob)
-	{
-		ui32ReturnBlobSize = psTls->psGlobalData->pfnGetBlob(pvKey, ui32KeySize, pvBlob, ui32BlobSize);
-	}
-
-	EGLThreadUnlock(psTls);
-
-	return ui32ReturnBlobSize;
+    EGLThreadLock(psTls);
+    callback = psTls->psGlobalData->pfnGetBlob;
+    enabled = callback && psTls->psGlobalData->pfnSetBlob;
+    EGLThreadUnlock(psTls);
+    /* Internal capability query; never forward a null key to application code. */
+    if(!pvKey && !ui32KeySize) return enabled;
+    return callback ? callback(pvKey, ui32KeySize, pvBlob, ui32BlobSize) : 0;
 }
 
 /***********************************************************************************

@@ -138,7 +138,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	hp->next = hp;
 	hp->prev = hp;
 	hp->uid  = uid;
-	hp->size = heapblocksize - sizeof(SceHeapWorkInternal);
+	hp->size = heapblocksize - (unsigned int)((char *)(hp + 1) - (char *)head);
 	hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
 
 	head->magic = (SceUIntPtr)(head + 1);
@@ -146,6 +146,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	st_psDevData = psDevData;
 	st_hDevMemContext = hDevMemContext;
 	head->memblockType = memblockType;
+    head->spare = SCE_NULL;
 
 	return (head);
 }
@@ -247,6 +248,7 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			result = sceClibMspaceMalloc(hp->msp, nbytes);
 		}
 		if (result != SCE_NULL) {
+            if(head->spare == hp) head->spare = SCE_NULL;
 #if USE_HEAPINFO
 			//J 割り当て済み標準ブロックの数をインクリメント
 			head->info.ordblks++;
@@ -423,7 +425,10 @@ int	sceHeapFreeHeapMemory(void *heap, void *ptr)
 		if (_sceHeapIsPointerInBound(hp, ptr)) {
 			sceClibMspaceFree(hp->msp, ptr);
 
-			if (hp != &head->prim && sceClibMspaceIsHeapEmpty(hp->msp)) {
+			if (hp != &head->prim && sceClibMspaceIsHeapEmpty(hp->msp) &&
+                !head->spare && hp->size <= (unsigned int)(head->bsize & ~4095))
+                head->spare = hp;
+            if (hp != &head->prim && hp != head->spare && sceClibMspaceIsHeapEmpty(hp->msp)) {
 				//J 双方向リンクリストから抜きます
 				//E unlink from double-liked list
 				hp->next->prev = hp->prev;

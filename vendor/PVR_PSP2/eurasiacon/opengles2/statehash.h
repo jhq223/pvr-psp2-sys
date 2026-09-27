@@ -40,6 +40,7 @@ typedef struct HashEntry_TAG
 
 	struct HashEntry_TAG *psNext;		/* Pointer to next item in hash-chain, to resolve hash conflicts */
 
+    struct HashEntry_TAG *psLRUPrev, *psLRUNext;
 } HashEntry;
 
 typedef IMG_VOID (* PFNDestroyHashItem)(GLES2Context *gc, IMG_UINT32 ui32Item);
@@ -62,6 +63,7 @@ typedef struct HashTable_TAG
 
 	HashEntry	**psTable;
 
+    HashEntry *psLRUHead, *psLRUTail;
 } HashTable;
 
 /* ui32Log2TableSize is log2(desired table size) */

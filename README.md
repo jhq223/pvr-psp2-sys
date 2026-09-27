@@ -86,9 +86,10 @@ cargo doc --no-deps
 
 ```sh
 cargo run --example pvr-native-check -- allocators . target/pvr-allocator-tests
+cargo run --example pvr-native-check -- optimizations . target/pvr-optimization-tests
 ```
 
-主机测试覆盖 ABI 校验和 CPU 端资源处理。ARM 模块的加载、GPU 同步、显示与性能需要在 Vita 上验证。
+主机测试覆盖 ABI 校验、纹理布局、uniform 查询、缓存淘汰、异步队列和 CPU 端资源处理。ARM 模块的加载、GPU 同步、显示与性能需要在 Vita 上验证。
 
 ## 源码布局
 

@@ -70,6 +70,7 @@ typedef struct KRMResourceRec
 	 * The offset is relative to KRMResourceManager->asAttachment.
 	 */
 	IMG_UINT32  ui32FirstAttachment;
+    IMG_UINT32 ui32Waiters;
 
 	/* Main doubly-linked list of resources. */
 	struct KRMResourceRec *psPrev, *psNext;
@@ -304,5 +305,7 @@ IMG_INTERNAL IMG_BOOL KRM_FlushUnKickedResource(const KRMKickResourceManager *ps
 												const KRMResource *psResource,
 												IMG_VOID *pvContext,
 												IMG_VOID (*pfnScheduleTA)(IMG_VOID *, IMG_VOID *));
+
+IMG_INTERNAL IMG_VOID KRM_RetireResource(KRMKickResourceManager *manager, KRMResource *resource);
 
 #endif /* defined _KICKRESOURCE_H_ */

@@ -2119,24 +2119,57 @@ static IMG_BOOL AssignAttributeLocations(GLES2Context *gc, GLES2Program *psProgr
  Returns            : 
  Description        : Assign all uniform locations
 ************************************************************************************/
+static IMG_VOID FreeUniformLookups(GLES2Program *psProgram)
+{
+    GLES2Free(IMG_NULL, psProgram->ppsUniformLocations);
+    GLES2Free(IMG_NULL, psProgram->ppsUniformNames);
+    psProgram->ppsUniformLocations = IMG_NULL;
+    psProgram->ppsUniformNames = IMG_NULL;
+    psProgram->ui32UniformLocationCount = 0;
+    psProgram->ui32UniformNameMask = 0;
+}
+
 static IMG_BOOL AssignUniformLocations(GLES2Program *psProgram)
 {
-	IMG_INT32 i32Location = 1;
-	IMG_UINT32 i;
-	GLES2Uniform *psUniform;
-
-	for(i = 0; i < psProgram->ui32NumActiveUniforms; i++)
-	{
-		psUniform = &psProgram->psActiveUniforms[i];
-
-		if(psUniform->i32Location != -1)
-		{
-			psUniform->i32Location = i32Location;
-			i32Location += (psUniform->ui32DeclaredArraySize) ? (IMG_INT32)psUniform->ui32DeclaredArraySize : 1;
-		}
-	}
-
-	return IMG_TRUE;
+    IMG_UINT32 location = 1, i, j, slots = 1;
+    GLES2Uniform *uniform;
+    FreeUniformLookups(psProgram);
+    for(i = 0; i < psProgram->ui32NumActiveUniforms; ++i)
+    {
+        IMG_UINT32 count;
+        uniform = &psProgram->psActiveUniforms[i];
+        if(uniform->i32Location == -1) continue;
+        count = uniform->ui32DeclaredArraySize ? uniform->ui32DeclaredArraySize : 1;
+        if(uniform->ui32ActiveArraySize > count || count > 0x7fffffffU - location) return IMG_FALSE;
+        uniform->i32Location = (IMG_INT32)location;
+        location += count;
+    }
+    if(location > 0xffffffffU / sizeof(GLES2Uniform *)) return IMG_FALSE;
+    psProgram->ppsUniformLocations = calloc(location, sizeof(GLES2Uniform *));
+    if(!psProgram->ppsUniformLocations) return IMG_FALSE;
+    psProgram->ui32UniformLocationCount = location;
+    for(i = 0; i < psProgram->ui32NumActiveUniforms; ++i)
+    {
+        uniform = &psProgram->psActiveUniforms[i];
+        if(uniform->i32Location < 0) continue;
+        for(j = 0; j < uniform->ui32ActiveArraySize; ++j)
+            psProgram->ppsUniformLocations[uniform->i32Location + j] = uniform;
+    }
+    if(psProgram->ui32NumActiveUserUniforms > 0x10000000U)
+    { FreeUniformLookups(psProgram); return IMG_FALSE; }
+    while(slots < psProgram->ui32NumActiveUserUniforms * 2U) slots <<= 1;
+    psProgram->ppsUniformNames = calloc(slots, sizeof(GLES2Uniform *));
+    if(!psProgram->ppsUniformNames)
+    { FreeUniformLookups(psProgram); return IMG_FALSE; }
+    psProgram->ui32UniformNameMask = slots - 1;
+    for(i = 0; i < psProgram->ui32NumActiveUserUniforms; ++i)
+    {
+        uniform = psProgram->ppsActiveUserUniforms[i];
+        j = UniformNameHash(uniform->pszName, strlen(uniform->pszName)) & (slots - 1);
+        while(psProgram->ppsUniformNames[j]) j = (j + 1) & (slots - 1);
+        psProgram->ppsUniformNames[j] = uniform;
+    }
+    return IMG_TRUE;
 }
 
 
@@ -2816,7 +2849,8 @@ static IMG_BOOL LinkVertexFragmentPrograms(GLES2Context *gc, GLES2Program *psPro
 		GLES2Free(IMG_NULL, psProgram->psActiveUniforms);
 		psProgram->psActiveUniforms = IMG_NULL;
 
-		GLES2Free(IMG_NULL, psProgram->ppsActiveUserUniforms);
+		FreeUniformLookups(psProgram);
+	GLES2Free(IMG_NULL, psProgram->ppsActiveUserUniforms);
 		psProgram->ppsActiveUserUniforms = IMG_NULL;
 	}
 
@@ -3345,6 +3379,7 @@ bad_alloc:
 	GLES2Free(IMG_NULL, psProgram->psBuiltInUniforms);
 	psProgram->psBuiltInUniforms = IMG_NULL;
 
+	FreeUniformLookups(psProgram);
 	GLES2Free(IMG_NULL, psProgram->ppsActiveUserUniforms);
 	psProgram->ppsActiveUserUniforms = IMG_NULL;
 
@@ -3758,6 +3793,8 @@ GL_APICALL void GL_APIENTRY glCompileShader (GLuint shader)
 	GLSLCompiledUniflexProgram *psCompiledProgram;
 #if defined(EGL_EXTENSION_ANDROID_BLOB_CACHE)
 	IMG_CHAR szHashStr[DIGEST_STRING_LENGTH];
+    struct { IMG_UINT32 version, stage, precision, temporaries, warnings; IMG_CHAR digest[DIGEST_STRING_LENGTH]; } sBlobKey;
+    IMG_BOOL bBlobCache = IMG_FALSE;
 #endif
 
 	__GLES2_GET_CONTEXT();
@@ -3782,14 +3819,22 @@ GL_APICALL void GL_APIENTRY glCompileShader (GLuint shader)
 	eProgramType = (psShader->ui32Type == GLES2_SHADERTYPE_VERTEX) ? GLSLPT_VERTEX : GLSLPT_FRAGMENT;
 
 #if defined(EGL_EXTENSION_ANDROID_BLOB_CACHE)
-	if(psShader->pszSource)
+	if(psShader->pszSource && (bBlobCache = (KEGLGetBlob(IMG_NULL, 0, IMG_NULL, 0) != 0)))
 	{
 		IMG_VOID *pvBinary = IMG_NULL;
 		IMG_UINT32 ui32BinarySize = 0;
 
 		DigestTextToHashString(psShader->pszSource, szHashStr);
+        GLES2MemSet(&sBlobKey, 0, sizeof(sBlobKey));
+        /* Increment when compiler options or binary semantics change. */
+        sBlobKey.version = 0x54300002U;
+        sBlobKey.stage = psShader->ui32Type;
+        sBlobKey.precision = gc->sAppHints.ui32AdjustShaderPrecision;
+        sBlobKey.temporaries = gc->psSysContext->sHWInfo.ui32NumUSETemporaryRegisters;
+        sBlobKey.warnings = gc->sAppHints.ui32GLSLEnabledWarnings;
+        GLES2MemCopy(sBlobKey.digest, szHashStr, sizeof(sBlobKey.digest));
 
-		ui32BinarySize = KEGLGetBlob(szHashStr, DIGEST_STRING_LENGTH, pvBinary, ui32BinarySize);
+		ui32BinarySize = KEGLGetBlob(&sBlobKey, sizeof(sBlobKey), pvBinary, ui32BinarySize);
 
 		if(ui32BinarySize)
 		{
@@ -3804,7 +3849,7 @@ GL_APICALL void GL_APIENTRY glCompileShader (GLuint shader)
 				goto NoBinary;
 			}
 
-			ui32ReturnSize = KEGLGetBlob(szHashStr, DIGEST_STRING_LENGTH, pvBinary, ui32BinarySize);
+			ui32ReturnSize = KEGLGetBlob(&sBlobKey, sizeof(sBlobKey), pvBinary, ui32BinarySize);
 
 			if (ui32ReturnSize != ui32BinarySize) 
 			{
@@ -3823,7 +3868,6 @@ GL_APICALL void GL_APIENTRY glCompileShader (GLuint shader)
 
 			if(eError != SGXBS_NO_ERROR || !psSharedShaderState)
 			{
-				psShader->psSharedState = IMG_NULL;
 				goto NoBinary;
 			}
 
@@ -3937,7 +3981,7 @@ NoBinary:
 	if(psCompiledProgram->bSuccessfullyCompiled)
 	{
 #if defined(EGL_EXTENSION_ANDROID_BLOB_CACHE)
-		if(psShader->pszSource)
+		if(psShader->pszSource && bBlobCache)
 		{
 			SGXBS_Error eError;
 			IMG_VOID *pvBinary = IMG_NULL;
@@ -3947,7 +3991,7 @@ NoBinary:
 
 			if(eError == SGXBS_NO_ERROR)
 			{
-				KEGLSetBlob(szHashStr, DIGEST_STRING_LENGTH, pvBinary, ui32BinarySize);
+				KEGLSetBlob(&sBlobKey, sizeof(sBlobKey), pvBinary, ui32BinarySize);
 				UniPatchFree(pvBinary);
 			}
 		}
@@ -4654,6 +4698,7 @@ static IMG_VOID FreeProgram(GLES2Context *gc, GLES2Program *psProgram, IMG_BOOL 
 
 	/* Free uniforms */
 	GLES2Free(IMG_NULL, psProgram->psActiveUniforms);
+	FreeUniformLookups(psProgram);
 	GLES2Free(IMG_NULL, psProgram->ppsActiveUserUniforms);
 	GLES2Free(IMG_NULL, psProgram->psBuiltInUniforms);
 

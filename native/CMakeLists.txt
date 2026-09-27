@@ -12,6 +12,8 @@ add_custom_command(OUTPUT "${CHECK_EXE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/check.rs" -o "${CHECK_EXE}"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/check.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/abi.rs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/check/depfile.rs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/check/optimizations.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/allocators.rs" "${PVR_RUSTC}"
     COMMENT "Build host PVR checker with Rust (standard library only)" VERBATIM)
 
@@ -33,17 +35,24 @@ set(MODULE_DIR "${CMAKE_BINARY_DIR}/module")
 set(IMPORT_DIR "${CMAKE_BINARY_DIR}/imports")
 file(MAKE_DIRECTORY "${MODULE_DIR}" "${IMPORT_DIR}")
 
-add_custom_command(OUTPUT "${IMPORT_DIR}/ready"
+set(PVR_IMPORT_LIBRARIES
+    "${IMPORT_DIR}/libSceGpuEs4User_stub.a"
+    "${IMPORT_DIR}/libSceGpuEs4UserForVsh_stub.a"
+    "${IMPORT_DIR}/libSceGpuEs4ForUser_stub.a"
+    "${IMPORT_DIR}/libSceDmacmgr_stub.a"
+    "${IMPORT_DIR}/libSceSysmoduleInternal_stub.a"
+    "${IMPORT_DIR}/libSceModulemgrInternal_stub.a"
+    "${IMPORT_DIR}/libSceDisplayUserInternal_stub.a")
+add_custom_command(OUTPUT "${IMPORT_DIR}/ready" ${PVR_IMPORT_LIBRARIES}
     COMMAND "${LIBGEN}" --dump "${PVR_ROOT}/lib/SceGpuEs4User.emd" --stub-archive
     COMMAND "${LIBGEN}" --dump "${PVR_ROOT}/lib/SceGpuEs4UserForVsh.emd" --stub-archive
     COMMAND "${LIBGEN}" --dump "${CMAKE_CURRENT_LIST_DIR}/imports/extensions.emd" --stub-archive
     COMMAND "${CMAKE_COMMAND}" -E touch "${IMPORT_DIR}/ready"
     DEPENDS "${PVR_ROOT}/lib/SceGpuEs4User.emd" "${PVR_ROOT}/lib/SceGpuEs4UserForVsh.emd"
-            "${CMAKE_CURRENT_LIST_DIR}/imports/extensions.emd"
+            "${CMAKE_CURRENT_LIST_DIR}/imports/extensions.emd" "${LIBGEN}"
     WORKING_DIRECTORY "${IMPORT_DIR}" VERBATIM)
 
 include(cmake/sources.cmake)
-file(GLOB_RECURSE PVR_HEADERS CONFIGURE_DEPENDS "${PVR_ROOT}/*.h" "${CMAKE_CURRENT_LIST_DIR}/include/*.h")
 
 function(pvr_module name)
     set(args -c -O3 -Xthumb=1 -include "${CMAKE_CURRENT_SOURCE_DIR}/include/sdk_extensions.h"
@@ -61,8 +70,10 @@ function(pvr_module name)
         string(SUBSTRING "${id}" 0 12 id)
         set(object "${CMAKE_BINARY_DIR}/${name}/${id}.o")
         add_custom_command(OUTPUT "${object}"
-            COMMAND "${SNC}" ${args} "${PVR_ROOT}/${source}" -o "${object}"
-            DEPENDS "${PVR_ROOT}/${source}" ${PVR_HEADERS} "${SNC}"
+            COMMAND "${SNC}" ${args} -MD -MF "${object}.raw.d" "${PVR_ROOT}/${source}" -o "${object}"
+            COMMAND "${CHECK_EXE}" depfile "${object}.raw.d" "${object}.d" "${object}"
+            DEPENDS "${PVR_ROOT}/${source}" "${SNC}" "${CHECK_EXE}"
+            DEPFILE "${object}.d"
             COMMENT "PSVSDK ${name}: ${source}" VERBATIM)
         list(APPEND objects "${object}")
     endforeach()
@@ -87,7 +98,7 @@ function(pvr_module name)
         COMMAND "${LINKER}" --oformat=prx "--prx-stub-output-dir=${MODULE_DIR}"
                 -o "${module}" ${objects} ${dependencies} ${imports} ${system_libraries}
         COMMAND "${CHECK_EXE}" abi "${CMAKE_CURRENT_SOURCE_DIR}/abi/${name}.nids" "${stub}"
-        DEPENDS ${objects} ${dependencies} "${IMPORT_DIR}/ready"
+        DEPENDS ${objects} ${dependencies} ${imports} "${IMPORT_DIR}/ready" "${LINKER}"
                 "${CHECK_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/abi/${name}.nids"
         COMMENT "PSVSDK link and ABI check: ${name}" VERBATIM)
     add_custom_target(${name} ALL DEPENDS "${module}" "${stub}")

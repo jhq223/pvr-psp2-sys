@@ -25,6 +25,23 @@ typedef  unsigned long  int  ub4;   /* unsigned 4-byte quantities */
 #define	HASH_MASK(N) (HASH_SIZE(N)-1)
 
 
+static IMG_VOID HashUnlinkLRU(HashTable *table, HashEntry *entry)
+{
+    if(entry->psLRUPrev) entry->psLRUPrev->psLRUNext = entry->psLRUNext;
+    else table->psLRUHead = entry->psLRUNext;
+    if(entry->psLRUNext) entry->psLRUNext->psLRUPrev = entry->psLRUPrev;
+    else table->psLRUTail = entry->psLRUPrev;
+}
+
+static IMG_VOID HashTouchLRU(HashTable *table, HashEntry *entry)
+{
+    entry->psLRUPrev = IMG_NULL;
+    entry->psLRUNext = table->psLRUHead;
+    if(table->psLRUHead) table->psLRUHead->psLRUPrev = entry;
+    else table->psLRUTail = entry;
+    table->psLRUHead = entry;
+}
+
 /***********************************************************************************
  Function Name      : HashTableCreate
  Inputs             : 
@@ -37,6 +54,7 @@ IMG_INTERNAL IMG_BOOL HashTableCreate(GLES2Context *gc, HashTable *psHashTable,
 									  PFNDestroyHashItem pfnDestroyItemFunc)
 {
 	psHashTable->ui32NumEntries = 0;
+    psHashTable->psLRUHead = psHashTable->psLRUTail = IMG_NULL;
 	psHashTable->ui32NumHashValues = 0;
 	psHashTable->ui32PeakNumEntries = 0;
 	psHashTable->ui32PeakNumHashValues = 0;
@@ -177,6 +195,8 @@ IMG_INTERNAL IMG_BOOL HashTableSearch(GLES2Context *gc,
 					*pui32Item = psHashChain->ui32Item;
 
 					psHashChain->ui32LastFrameHashed = gc->ui32FrameNum;
+                    HashUnlinkLRU(psHashTable, psHashChain);
+                    HashTouchLRU(psHashTable, psHashChain);
 				}
 			}
 		}
@@ -224,57 +244,19 @@ IMG_INTERNAL IMG_VOID HashTableInsert(GLES2Context *gc,
 
 	/* Insert at head of hash chain */
 	psHashTable->psTable[ui32TableIndex] = psNewHashEntry;
+    HashTouchLRU(psHashTable, psNewHashEntry);
 
 	psHashTable->ui32NumEntries++;
 
-	/* If the number of entries in the table has exceeded the maximum,
-	   then we must delete an entry */
-	while(psHashTable->ui32NumEntries > psHashTable->ui32MaxNumEntries)
-	{
-		HashEntry *psOldestEntry;
-		IMG_UINT32 ui32OldestEntryFrame;
+    while(psHashTable->ui32NumEntries > psHashTable->ui32MaxNumEntries &&
+          psHashTable->psLRUTail != psNewHashEntry)
+    {
+        HashEntry *oldest = psHashTable->psLRUTail;
+        IMG_UINT32 unused;
+        HashTableDelete(gc, psHashTable, oldest->tHashValue,
+                        oldest->pui32HashKey, oldest->ui32HashKeySizeInDWords, &unused);
+    }
 
-		while(psHashChain == IMG_NULL)
-		{
-			/* There were no entries in this hash chain before we added
-	 		   so find the next non-empty chain */
-			ui32TableIndex = (ui32TableIndex + 1) & psHashTable->ui32HashValueMask;
-
-			psHashChain = psHashTable->psTable[ui32TableIndex];
-		}
-		
-		/* Search through the hash chain, looking for the oldest 
-		   item in the chain. */
-		psOldestEntry = psHashTable->psTable[ui32TableIndex];
-
-		ui32OldestEntryFrame = psOldestEntry->ui32LastFrameHashed;
-			
-		psHashChain = psOldestEntry->psNext;
-
-		while(psHashChain)
-		{
-			if(psHashChain->ui32LastFrameHashed < ui32OldestEntryFrame)
-			{
-				psOldestEntry = psHashChain;
-
-				ui32OldestEntryFrame = psHashChain->ui32LastFrameHashed;
-			}
-
-			psHashChain = psHashChain->psNext;
-		}
-
-		if(psOldestEntry != psNewHashEntry) /* We don't want to delete the new entry! */
-		{
-			IMG_UINT32 ui32Unused;
-	
-			HashTableDelete(gc, psHashTable, psOldestEntry->tHashValue,
-							psOldestEntry->pui32HashKey, psOldestEntry->ui32HashKeySizeInDWords, &ui32Unused);
-		}
-		else
-		{
-			psHashChain = IMG_NULL; /* Loop round and find another chain to search */
-		}
-	}
 }
 
 
@@ -329,7 +311,9 @@ IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, 
 					/* Return the hash item - useful in some circumstances */
 					*pui32Item = psHashChain->ui32Item;
 
-					/* Call the destroy function for this item */
+					HashUnlinkLRU(psHashTable, psHashChain);
+
+                    /* Call the destroy function for this item */
 					(psHashTable->pfnDestroyItemFunc)(gc, psHashChain->ui32Item);
 
 					if(psHashChain->pui32HashKey)
@@ -346,9 +330,14 @@ IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, 
 					psPrevHashEntry = psHashChain;
 					psHashChain = psHashChain->psNext;
 				}
-			}
-		}
-		else
+            }
+            else
+            {
+                psPrevHashEntry = psHashChain;
+                psHashChain = psHashChain->psNext;
+            }
+        }
+        else
 		{
 			psPrevHashEntry = psHashChain;
 			psHashChain = psHashChain->psNext;

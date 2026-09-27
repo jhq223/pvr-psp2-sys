@@ -68,6 +68,9 @@ typedef struct GLES2BufferObjectRec
 
 	/* Is the buffer mapped */
 	IMG_BOOL bMapped;
+    IMG_BOOL bRangeCached;
+    IMG_UINTPTR_T uiRangeOffset;
+    IMG_UINT32 ui32RangeCount, ui32RangeType, ui32RangeMin, ui32RangeMax;
 
 #if defined(PDUMP)
 	/* Has this object been pdumped since it was last changed. */

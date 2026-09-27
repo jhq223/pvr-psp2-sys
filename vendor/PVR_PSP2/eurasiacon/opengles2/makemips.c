@@ -1512,7 +1512,7 @@ IMG_BOOL IMG_INTERNAL MakeTextureMipmapLevels(GLES2Context *gc, GLES2Texture *ps
 	{
 		if (!gc->sAppHints.bDisableAsyncTextureOp)
 		{
-			SWMakeTextureMipmapLevels(gc, psTex, ui32Face, ui32MaxFace, bIsNonPow2);
+			if(!SWMakeTextureMipmapLevels(gc, psTex, ui32Face, ui32MaxFace, bIsNonPow2)) return IMG_FALSE;
 		}
 		else
 		{

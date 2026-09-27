@@ -21,6 +21,7 @@
 #include "context.h"
 #include "spanpack.h"
 #include "twiddle.h"
+#include "texregion.h"
 
 /***********************************************************************************
  Function Name      : GetStridedSurfaceData
@@ -851,6 +852,33 @@ IMG_INTERNAL IMG_BOOL SetupReadPixelsSpanInfo(GLES2Context *gc, GLES2PixelSpanIn
 					  Will require a render and wait for completion. 
 					  Format conversion follows from this.
 ************************************************************************************/
+static IMG_VOID *ReadSurfaceRegion(GLES2Context *gc, EGLDrawableParams *params, GLES2PixelSpanInfo *span)
+{
+    IMG_MEMLAYOUT format = GetColorAttachmentMemFormat(gc, gc->sFrameBuffer.psActiveFrameBuffer);
+    IMG_UINT32 layout, bytes = BytesPerPixel(params->ePixelFormat), x, y;
+    IMG_INT32 yStep;
+    IMG_VOID *result;
+    if(format == IMG_MEMLAYOUT_TILED) layout = 1;
+#if !defined(SGX_FEATURE_HYBRID_TWIDDLING)
+    else if(format == IMG_MEMLAYOUT_TWIDDLED &&
+            !(params->ui32Width & (params->ui32Width - 1)) && !(params->ui32Height & (params->ui32Height - 1))) layout = 2;
+#endif
+    else return GetStridedSurfaceData(gc, params, span);
+    if(!bytes || (params->eRotationAngle != PVRSRV_ROTATE_0 && params->eRotationAngle != PVRSRV_FLIP_Y))
+        return GetStridedSurfaceData(gc, params, span);
+    x = (IMG_UINT32)span->i32ReadX;
+    yStep = params->eRotationAngle == PVRSRV_ROTATE_0 ? -1 : 1;
+    y = (IMG_UINT32)(yStep < 0 ? -span->i32ReadY : span->i32ReadY);
+    result = GLES2Malloc(gc, span->ui32Width * span->ui32Height * bytes);
+    if(!result) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_NULL; }
+    PVRTextureReadRegion(result, params->pvLinSurfaceAddress, layout, params->ui32Width, params->ui32Height,
+        x, y, span->ui32Width, span->ui32Height, bytes, yStep);
+    span->i32ReadX = span->i32ReadY = 0;
+    span->i32SrcGroupIncrement = bytes;
+    span->i32SrcRowIncrement = span->ui32Width * bytes;
+    return result;
+}
+
 GL_APICALL void GL_APIENTRY glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, 
 									 GLenum format, GLenum type, void *pixels)
 {
@@ -1048,7 +1076,7 @@ GL_APICALL void GL_APIENTRY glReadPixels(GLint x, GLint y, GLsizei width, GLsize
 
 #endif /* defined(READPIXELS_OPTIMISATION) */
 
-	pvSurfacePointer = GetStridedSurfaceData(gc, psReadParams, &sSpanInfo);
+	pvSurfacePointer = ReadSurfaceRegion(gc, psReadParams, &sSpanInfo);
 
 	if(!pvSurfacePointer)
 	{

@@ -35,7 +35,13 @@ IMG_INTERNAL IMG_VOID SWTextureUpload(
 
 IMG_INTERNAL IMG_BOOL SWMakeTextureMipmapLevels(GLES2Context *gc, GLES2Texture *psTex, IMG_UINT32 ui32Face, IMG_UINT32 ui32MaxFace, IMG_BOOL bIsNonPow2);
 
-IMG_INT32 texOpAsyncCleanupThread(IMG_UINT32 argSize, IMG_VOID *pArgBlock);
+IMG_BOOL SWTextureInit(GLES2Context *gc);
+IMG_VOID SWTextureWait(GLES2Context *gc, GLES2Texture *texture);
+IMG_BOOL SWTextureBusy(GLES2Context *gc, GLES2Texture *texture);
+IMG_VOID SWTextureStopWorkers(GLES2Context *gc);
+IMG_VOID SWTextureDestroy(GLES2Context *gc);
+IMG_VOID *SWTextureAllocStaging(GLES2Context *gc, IMG_UINT32 size);
+IMG_VOID SWTextureFreeStaging(GLES2Context *gc, IMG_VOID *pointer, IMG_UINT32 size);
 
 IMG_VOID texOpAsyncAddForCleanup(GLES2Context *gc, IMG_PVOID pvPtr);
 

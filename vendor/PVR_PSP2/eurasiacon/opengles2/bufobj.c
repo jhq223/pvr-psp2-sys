@@ -132,10 +132,10 @@ IMG_INTERNAL IMG_VOID ReclaimBufferObjectMemKRM(IMG_VOID *pvContext, KRMResource
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyBufferObjectGhostKRM(IMG_VOID *pvContext, KRMResource *psResource)
 {
-	PVR_UNREFERENCED_PARAMETER(pvContext);
-	PVR_UNREFERENCED_PARAMETER(psResource);
-
-	PVR_DPF((PVR_DBG_WARNING, "DestroyBufferObjectGhostKRM: Called"));
+    GLES2Context *gc = pvContext;
+    GLES2BufferObject *ghost = (GLES2BufferObject *)((IMG_UINTPTR_T)psResource - offsetof(GLES2BufferObject, sResource));
+    if(ghost->psMemInfo) GLES2FREEDEVICEMEM_HEAP(gc, ghost->psMemInfo);
+    GLES2Free(IMG_NULL, ghost);
 }	
 
 
@@ -146,6 +146,30 @@ IMG_INTERNAL IMG_VOID DestroyBufferObjectGhostKRM(IMG_VOID *pvContext, KRMResour
  Returns            : Success/Failure
  Description        : Waits until a buffer object is no longer needed by the TA
 ************************************************************************************/
+static IMG_BOOL ReplaceBufferStorage(GLES2Context *gc, GLES2BufferObject *buffer, IMG_UINT32 size, IMG_UINT32 alignment)
+{
+    GLES2BufferObject *ghost = GLES2Calloc(gc, sizeof(*ghost));
+    PVRSRV_CLIENT_MEM_INFO *replacement = IMG_NULL;
+    PVRSRV_ERROR error = PVRSRV_OK;
+    if(!ghost) return IMG_FALSE;
+    if(size)
+    {
+        error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ | PVRSRV_MAP_GC_MMU, size, alignment, &replacement);
+        if(error != PVRSRV_OK)
+            error = GLES2ALLOCDEVICEMEM_HEAP(gc, PVRSRV_MEM_READ, size, alignment, &replacement);
+    }
+    if(error != PVRSRV_OK) { GLES2Free(IMG_NULL, ghost); return IMG_FALSE; }
+    ghost->psMemInfo = buffer->psMemInfo;
+    if(!KRM_GhostResource(&gc->psSharedState->sBufferObjectKRM, &buffer->sResource, &ghost->sResource))
+    {
+        if(replacement) GLES2FREEDEVICEMEM_HEAP(gc, replacement);
+        GLES2Free(IMG_NULL, ghost); return IMG_FALSE;
+    }
+    buffer->psMemInfo = replacement;
+    buffer->ui32AllocAlign = alignment;
+    return IMG_TRUE;
+}
+
 static IMG_BOOL WaitUntilBufObjNotUsed(GLES2Context *gc, GLES2BufferObject *psBufObj)
 {
 	/*
@@ -190,7 +214,7 @@ static IMG_BOOL WaitUntilBufObjNotUsed(GLES2Context *gc, GLES2BufferObject *psBu
 	/*
 	** Case 3
 	*/
-	if(gc->psRenderSurface->bPrimitivesSinceLastTA)
+	if(gc->psRenderSurface && gc->psRenderSurface->bPrimitivesSinceLastTA)
 	{
 		/* Is this buffer object attached to the current kick? */
 		if(KRM_IsResourceInUse(&gc->psSharedState->sBufferObjectKRM,
@@ -257,9 +281,16 @@ static IMG_VOID FreeBufferObject(GLES2Context *gc, GLES2BufferObject *psBufObj, 
 	/* Free its device memory */
 	if (psBufObj->psMemInfo)
 	{
-		if(!WaitUntilBufObjNotUsed(gc, psBufObj))
+        if(!bIsShutdown && gc->psSharedState->ui32RefCount == 1 && KRM_IsResourceNeeded(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource))
+        {
+            KRM_RetireResource(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource);
+            return;
+        }
+        if(!WaitUntilBufObjNotUsed(gc, psBufObj))
 		{
-			PVR_DPF((PVR_DBG_ERROR,"FreeBufferObject: Problem freeing buffer object"));
+			PVR_DPF((PVR_DBG_ERROR,"FreeBufferObject: GPU still owns buffer; retiring storage"));
+            KRM_RetireResource(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource);
+            return;
 		}
 
 		GLES2FREEDEVICEMEM_HEAP(gc, psBufObj->psMemInfo);
@@ -632,6 +663,7 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
 	GLES2BufferObject *psBufObj;
 	GLES2VertexArrayObject *psVAO;
 	PVRSRV_ERROR eError;
+    IMG_BOOL replaced = IMG_FALSE;
 
 	__GLES2_GET_CONTEXT();
 
@@ -716,12 +748,22 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
 		ui32AllocAlign = EURASIA_VDM_INDEX_FETCH_BURST_SIZE;
 	}
 
+    KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->sBufferObjectKRM);
+    if(gc->psSharedState->ui32RefCount == 1 && psBufObj->psMemInfo && KRM_IsResourceNeeded(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource))
+    {
+        if(!ReplaceBufferStorage(gc, psBufObj, size ? uAllocSize : 0, ui32AllocAlign))
+        { SetError(gc, GL_OUT_OF_MEMORY); GLES2_TIME_STOP(GLES2_TIMES_glBufferData); return; }
+        replaced = IMG_TRUE;
+        psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
+        gc->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
+        if(psVAO->psBoundElementBuffer == psBufObj) psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ELEMENT_BUFFER;
+    }
 	/* if it already holds some data, free it first (unless it is the same size as the new request) */
-	if (psBufObj->psMemInfo)
+	if (psBufObj->psMemInfo && !replaced)
 	{
 		if(WaitUntilBufObjNotUsed(gc, psBufObj))
 		{
-			if((psBufObj->psMemInfo->uAllocSize != uAllocSize) ||
+			if((psBufObj->psMemInfo->uAllocSize < uAllocSize) ||
 			   (psBufObj->ui32AllocAlign != ui32AllocAlign))
 			{
 #if defined(DEBUG) || defined(TIMING)
@@ -813,7 +855,8 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
 	}
 
 	/* store the state */
-	psBufObj->ui32BufferSize = (IMG_UINT32)size;
+	psBufObj->bRangeCached = IMG_FALSE;
+    psBufObj->ui32BufferSize = (IMG_UINT32)size;
 	psBufObj->eUsage = usage;
 	psBufObj->bMapped = IMG_FALSE;
 
@@ -912,6 +955,7 @@ GL_APICALL void GL_APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsi
 			pvDst = (IMG_VOID *)((IMG_UINT8 *)psBufObj->psMemInfo->pvLinAddr + offset);
 
 			GLES2MemCopy(pvDst, (const IMG_VOID *)data, (IMG_UINT32)size);
+            psBufObj->bRangeCached = IMG_FALSE;
 		}
 		else
 		{
@@ -1016,7 +1060,8 @@ SetOutOfMemErrorAndReturnNULL:
 		}
 
 		psBufObj->eAccess = access;
-		psBufObj->bMapped = IMG_TRUE;
+		psBufObj->bRangeCached = IMG_FALSE;
+        psBufObj->bMapped = IMG_TRUE;
 
 		GLES2_TIME_STOP(GLES2_TIMES_glMapBuffer);
 

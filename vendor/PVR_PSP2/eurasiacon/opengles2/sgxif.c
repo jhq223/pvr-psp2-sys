@@ -490,24 +490,10 @@ static IMG_BOOL InsertItemIntoFlushList(GLES2Context *gc, EGLRenderSurface *psRe
 	psItem->psTex			= psTex;
 	psItem->psNext			= IMG_NULL;
 
-	/* Insert at the end of the list */
-	if(gc->psSharedState->psFlushList==IMG_NULL)
-	{
-		gc->psSharedState->psFlushList = psItem;
-	}
-	else
-	{
-		GLES2SurfaceFlushList *psInsertPoint;
-
-		psInsertPoint = gc->psSharedState->psFlushList;
-
-		while(psInsertPoint->psNext)
-		{
-			psInsertPoint = psInsertPoint->psNext;
-		}
-
-		psInsertPoint->psNext = psItem;
-	}
+    if(!gc->psSharedState->ppsFlushTail)
+        gc->psSharedState->ppsFlushTail = &gc->psSharedState->psFlushList;
+    *gc->psSharedState->ppsFlushTail = psItem;
+    gc->psSharedState->ppsFlushTail = &psItem->psNext;
 
 	PVRSRVUnlockMutex(gc->psSharedState->hFlushListLock);
 
@@ -533,6 +519,7 @@ static IMG_BOOL StartFrame(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, PVRSRV
 	/* Try to get rid of texture and shader ghosts */
 	KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->psTextureManager->sKRM);
 	KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->sUSEShaderVariantKRM);
+    KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->sBufferObjectKRM);
 	
 	GLES2InitRegs(gc, *pui32ClearFlags);
 
@@ -774,6 +761,22 @@ static IMG_BOOL StartFrame(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, PVRSRV
 ************************************************************************************/
 IMG_INTERNAL IMG_BOOL PrepareToDraw(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, IMG_BOOL bTakeLock)
 {
+    if(gc->sProgram.psCurrentProgram)
+    {
+        IMG_UINT32 stage, i;
+        for(stage = 0; stage < 2; ++stage)
+        {
+            GLES2ProgramShader *shader = stage ? &gc->sProgram.psCurrentProgram->sFragment : &gc->sProgram.psCurrentProgram->sVertex;
+            for(i = 0; i < GLES2_MAX_TEXTURE_UNITS; ++i)
+                if(shader->ui32SamplersActive & (1U << i))
+                {
+                    GLES2TextureSampler *sampler = &shader->asTextureSamplers[i];
+                    if(sampler->ui8ImageUnit < GLES2_MAX_TEXTURE_UNITS && sampler->ui8SamplerTypeIndex < GLES2_TEXTURE_TARGET_MAX)
+                        SWTextureWait(gc, gc->sTexture.apsBoundTexture[sampler->ui8ImageUnit][sampler->ui8SamplerTypeIndex]);
+                }
+        }
+    }
+
 	EGLDrawableParams *psDrawParams = gc->psDrawParams;
 	EGLDrawableParams sParams;
 	PVRSRV_MUTEX_HANDLE hSurfaceMutex = IMG_NULL;
@@ -2041,10 +2044,7 @@ skip_zs_alloc:
 	psKickTA->sKickTACommon.ui16MaxDrawCallsPerCore = gc->sAppHints.ui32MaxDrawCallsPerCore;
 	psKickTA->sKickTACommon.ui16PrimitiveSplitThreshold = gc->sAppHints.ui32PrimitiveSplitThreshold;
 
-	while (gc->ui32AsyncTexOpNum)
-	{
-		sceKernelDelayThread(10);
-	}
+    /* CPU texture dependencies are resolved when each draw attaches its resources. */
 
 	GLES2_TIME_START(GLES2_TIMER_SGXKICKTA_TIME);
 
@@ -2150,7 +2150,8 @@ skip_zs_alloc:
 						
 						psItem = *ppsFlushList;
 
-						*ppsFlushList = (*ppsFlushList)->psNext;
+						if(!psItem->psNext) gc->psSharedState->ppsFlushTail = ppsFlushList;
+                        *ppsFlushList = psItem->psNext;
 
 						GLES2Free(IMG_NULL, psItem);
 

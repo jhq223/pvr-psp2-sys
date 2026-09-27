@@ -80,7 +80,8 @@ static IMG_BOOL FlushUnflushedTextureRenders(GLES2Context *gc, GLES2Texture *psT
 			}
 			else
 			{
-				*ppsFlushList = psFlushItem->psNext;
+				if(!psFlushItem->psNext) gc->psSharedState->ppsFlushTail = ppsFlushList;
+                *ppsFlushList = psFlushItem->psNext;
 
 				GLES2Free(IMG_NULL, psFlushItem);
 
@@ -93,7 +94,8 @@ static IMG_BOOL FlushUnflushedTextureRenders(GLES2Context *gc, GLES2Texture *psT
 
 					if(psFlushItem->psRenderSurface == psRenderSurface)
 					{
-						*ppsFlushList = psFlushItem->psNext;
+						if(!psFlushItem->psNext) gc->psSharedState->ppsFlushTail = ppsFlushList;
+                *ppsFlushList = psFlushItem->psNext;
 
 						GLES2Free(IMG_NULL, psFlushItem);
 					}
@@ -259,6 +261,8 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 	GLES2Context	 *gc = (GLES2Context *)pvContext;
 	IMG_UINT32       ui32Lod, ui32Face;
 	GLES2MipMapLevel *psLevel;
+
+    if(SWTextureBusy(gc, psTex)) return;
 
 	GLES_ASSERT(psResource);
 
@@ -868,6 +872,7 @@ IMG_INTERNAL IMG_BOOL SetupTextureRenderTargetControlWords(GLES2Context *gc, GLE
 ************************************************************************************/
 IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(GLES2Context *gc, GLES2Texture *psTex)
 {
+    SWTextureWait(gc, psTex);
 	GLES2TextureManager *psTexMgr = gc->psSharedState->psTextureManager;
 	GLES2Ghost *psGhost;
 
@@ -957,6 +962,7 @@ IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(GLES2Context *gc, GLES2Texture *psTex)
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID  TextureRemoveResident(GLES2Context *gc, GLES2Texture *psTex)
 {
+    SWTextureWait(gc, psTex);
 	psTex->bResidence = IMG_FALSE;
 
 	/*
@@ -1150,6 +1156,9 @@ IMG_INTERNAL IMG_BOOL TextureMakeResident(GLES2Context *gc, GLES2Texture *psTex)
 	IMG_UINT32 ui32Level;
 	GLES2MipMapLevel *psMipLevel;
 
+    SWTextureWait(gc, psTex);
+    bDirty = psTex->bResidence ? IMG_FALSE : IMG_TRUE;
+    psTex->bUploadFailed = IMG_FALSE;
 	if(psTex->ui32HWFlags & GLES2_MIPMAP)
 	{
 		ui32MaxLevel = GLES2_MAX_TEXTURE_MIPMAP_LEVELS;
@@ -1277,6 +1286,7 @@ IMG_INTERNAL IMG_BOOL TextureMakeResident(GLES2Context *gc, GLES2Texture *psTex)
 				if(psMipLevel->pui8Buffer != GLES2_LOADED_LEVEL && psMipLevel->pui8Buffer != 0)
 				{
 					TranslateLevel(gc, psTex, j, i);
+                    if(psTex->bUploadFailed) { PVRSRVUnlockMutex(gc->psSharedState->hTertiaryLock); return IMG_FALSE; }
 
 #if (defined(DEBUG) || defined(TIMING))
 					ui32TextureMemCurrent -= psMipLevel->ui32ImageSize;
@@ -1296,7 +1306,8 @@ IMG_INTERNAL IMG_BOOL TextureMakeResident(GLES2Context *gc, GLES2Texture *psTex)
 		GLES2_TIME_STOP(GLES2_TIMER_TEXTURE_TRANSLATE_LOAD_TIME);
 	}
 
-	psTex->bResidence = IMG_TRUE;
+	if(psTex->bUploadFailed) { PVRSRVUnlockMutex(gc->psSharedState->hTertiaryLock); return IMG_FALSE; }
+    psTex->bResidence = IMG_TRUE;
 
 	GLES_ASSERT(IsTextureConsistentWithMipMaps(psTex));
 
@@ -2368,6 +2379,60 @@ static IMG_VOID SetupEGLImageArbitraryStride(GLES2Texture *psTex, IMG_UINT32 *pu
  Returns            : Pointer to new texture level buffer
  Description        : (Re)Allocates host memory for a new texture level.
 ************************************************************************************/
+/* BC input already has the GPU layout. Allocate its final storage before copying. */
+IMG_INTERNAL IMG_BOOL TextureUploadNativeBC(GLES2Context *gc, GLES2Texture *texture, GLenum internalFormat,
+    const GLES2TextureFormat *format, IMG_UINT32 width, IMG_UINT32 height, const IMG_VOID *pixels)
+{
+    GLES2Texture candidate = {0};
+    GLES2MipMapLevel level = {0}, *old = &texture->psMipLevel[0];
+    SWTextureWait(gc, texture);
+    if(texture->psMemInfo && SGX2DQueryBlitsComplete(gc->ps3DDevData,
+        texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
+    candidate.sState = texture->sState;
+    candidate.ui32TextureTarget = GLES2_TEXTURE_TARGET_2D;
+    candidate.ui32LevelsConsistent = GLES2_TEX_UNKNOWN;
+    candidate.psMipLevel = &level;
+    candidate.psFormat = format;
+    level.psTex = &candidate;
+    level.ui32Width = width; level.ui32Height = height;
+    level.ui32WidthLog2 = FloorLog2(width); level.ui32HeightLog2 = FloorLog2(height);
+    level.ui32ImageSize = (width / 4) * (height / 4) * format->ui32TotalBytesPerTexel;
+    level.psTexFormat = format; level.eRequestedFormat = internalFormat;
+    if(IsTextureConsistent(gc, &candidate, gc->sAppHints.ui32OverloadTexLayout, IMG_FALSE) != GLES2_TEX_CONSISTENT ||
+       !CreateTextureMemory(gc, &candidate)) return IMG_FALSE;
+    GLES2MemCopy(candidate.psMemInfo->pvLinAddr, pixels, level.ui32ImageSize);
+    if(texture->psMemInfo)
+    {
+        if(KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &texture->sResource))
+        {
+            if(!TexMgrGhostTexture(gc, texture))
+            { GLES2FREEDEVICEMEM_HEAP(gc, candidate.psMemInfo); return IMG_FALSE; }
+        }
+        else
+        {
+            KRM_RemoveResourceFromAllLists(&gc->psSharedState->psTextureManager->sKRM, &texture->sResource);
+            GLES2FREEDEVICEMEM_HEAP(gc, texture->psMemInfo);
+        }
+    }
+    if(old->pui8Buffer && old->pui8Buffer != GLES2_LOADED_LEVEL) GLES2FreeAsync(gc, old->pui8Buffer);
+    old->pui8Buffer = GLES2_LOADED_LEVEL;
+    old->ui32Width = width; old->ui32Height = height;
+    old->ui32WidthLog2 = level.ui32WidthLog2; old->ui32HeightLog2 = level.ui32HeightLog2;
+    old->ui32ImageSize = level.ui32ImageSize;
+    old->psTexFormat = format; old->eRequestedFormat = internalFormat;
+    texture->psMemInfo = candidate.psMemInfo;
+    texture->psFormat = format;
+    texture->ui32HWFlags = candidate.ui32HWFlags;
+    texture->ui32NumLevels = candidate.ui32NumLevels;
+    texture->ui32LevelsConsistent = GLES2_TEX_UNKNOWN;
+    texture->sState.aui32StateWord1[0] = candidate.sState.aui32StateWord1[0];
+    texture->sState.aui32StateWord2[0] = (candidate.psMemInfo->sDevVAddr.uiAddr >> EURASIA_PDS_DOUTT2_TEXADDR_ALIGNSHIFT)
+        << EURASIA_PDS_DOUTT2_TEXADDR_SHIFT;
+    SetupTwiddleFns(texture);
+    texture->bResidence = IMG_TRUE;
+    return IMG_TRUE;
+}
+
 IMG_INTERNAL IMG_UINT8*  TextureCreateLevel(GLES2Context *gc, GLES2Texture *psTex,
 											IMG_UINT32 ui32Level, GLenum eInternalFormat, 
 											const GLES2TextureFormat *psTexFormat, 
@@ -2391,6 +2456,7 @@ IMG_INTERNAL IMG_UINT8*  TextureCreateLevel(GLES2Context *gc, GLES2Texture *psTe
 	GLES_ASSERT(ui32BaseHeight <= GLES2_MAX_TEXTURE_SIZE);
 #endif /* DEBUG */
 
+    SWTextureWait(gc, psTex);
 	GLES_ASSERT(psTexFormat != IMG_NULL);
 
 	ui32BufferWidth = ui32Width;
@@ -2673,6 +2739,7 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	IMG_UINT32       i, ui32MaxLevel;
 	GLES2MipMapLevel *psMipLevel;
 
+    SWTextureWait(gc, psTex);
 	ui32MaxLevel = GLES2_MAX_TEXTURE_MIPMAP_LEVELS;
 
 	if(psTex->ui32TextureTarget == GLES2_TEXTURE_TARGET_CEM)

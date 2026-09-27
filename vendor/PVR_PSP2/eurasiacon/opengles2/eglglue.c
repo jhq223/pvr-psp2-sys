@@ -114,6 +114,8 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 		/* Make the managers wait for the resources in their lists */
 		KRM_WaitForAllResources(&psSharedState->psTextureManager->sKRM,   GLES2_DEFAULT_WAIT_RETRIES);
 		KRM_WaitForAllResources(&psSharedState->sUSEShaderVariantKRM, GLES2_DEFAULT_WAIT_RETRIES);
+        KRM_WaitForAllResources(&psSharedState->sBufferObjectKRM, GLES2_DEFAULT_WAIT_RETRIES);
+        KRM_DestroyUnneededGhosts(gc, &psSharedState->sBufferObjectKRM);
 
 
 		/* Destroy all the shareable resources */
@@ -258,6 +260,8 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 
 			gc->psSharedState = psShareContext->psSharedState;
 			gc->psSharedState->ui32RefCount++;
+            /* No new async jobs can be published once sharing begins. */
+            SWTextureWait(psShareContext, IMG_NULL);
 
 			PVRSRVUnlockMutex(psShareContext->psSharedState->hPrimaryLock);
 			/* *** END CRITICAL SECTION *** */
@@ -633,39 +637,11 @@ static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLc
 		}
 	}
 
-	sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_ULT);
-
-	IMG_UINT32 ui32UltRuntimeWorkAreaSize = sceUltUlthreadRuntimeGetWorkAreaSize(gc->sAppHints.ui32SwTexOpMaxUltNum, gc->sAppHints.ui32SwTexOpThreadNum);
-	gc->pvUltRuntimeWorkArea = GLES2Malloc(gc, ui32UltRuntimeWorkAreaSize);
-	gc->pvUltRuntime = GLES2Malloc(gc, _SCE_ULT_ULTHREAD_RUNTIME_SIZE);
-	gc->pvUltThreadStorage = GLES2Malloc(gc, 4 * gc->sAppHints.ui32SwTexOpMaxUltNum);
-	GLES2MemSet(gc->pvUltThreadStorage, 0, 4 * gc->sAppHints.ui32SwTexOpMaxUltNum);
-
-	SceUltUlthreadRuntimeOptParam sUltOptParam;
-	sceUltUlthreadRuntimeOptParamInitialize(&sUltOptParam);
-	sUltOptParam.oneShotThreadStackSize = 4 * 1024 + (4 * 1024 * (IMG_UINT32)((IMG_FLOAT)gc->sAppHints.ui32SwTexOpMaxUltNum / 4.0f));
-	sUltOptParam.workerThreadAttr = 0;
-	sUltOptParam.workerThreadCpuAffinityMask = gc->sAppHints.ui32SwTexOpThreadAffinity;
-	sUltOptParam.workerThreadOptParam = 0;
-	sUltOptParam.workerThreadPriority = gc->sAppHints.ui32SwTexOpThreadPriority;
-
-	i = sceUltUlthreadRuntimeCreate(gc->pvUltRuntime,
-		"OGLES2UltRuntime",
-		gc->sAppHints.ui32SwTexOpMaxUltNum,
-		gc->sAppHints.ui32SwTexOpThreadNum,
-		gc->pvUltRuntimeWorkArea,
-		&sUltOptParam);
-
-	if (i != SCE_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "InitContext: Couldn't create ULT runtime: 0x%X", i));
-
-		goto FAILED_sceUltUlthreadRuntimeCreate;
-	}
-
-	gc->bSwTexOpFin = IMG_FALSE;
-	gc->hSwTexOpThrd = sceKernelCreateThread("OGLES2AsyncTexOpCl", texOpAsyncCleanupThread, SCE_KERNEL_LOWEST_PRIORITY_USER, SCE_KERNEL_4KiB, 0, 0, SCE_NULL);
-	sceKernelStartThread(gc->hSwTexOpThrd, 4, &gc);
+    if(!SWTextureInit(gc))
+    {
+        FreeContextSharedState(gc);
+        goto FAILED_sceUltUlthreadRuntimeCreate;
+    }
 
 #if defined(GLES2_EXTENSION_VERTEX_ARRAY_OBJECT)
 	/* Initialize the unshareable names arrays */
@@ -1046,13 +1022,8 @@ FAILED_CreateHashTable:
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sKRMTAStatusUpdate.psMemInfo);
 
 FAILED_TASync:
-
-	FreeContextSharedState(gc);
-
-	GLES2Free(IMG_NULL, gc->pvUltThreadStorage);
-	sceUltUlthreadRuntimeDestroy((SceUltUlthreadRuntime *)gc->pvUltRuntime);
-	GLES2Free(IMG_NULL, gc->pvUltRuntimeWorkArea);
-	GLES2Free(IMG_NULL, gc->pvUltRuntime);
+    SWTextureDestroy(gc);
+    FreeContextSharedState(gc);
 
 FAILED_sceUltUlthreadRuntimeCreate:
 
@@ -1102,6 +1073,12 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 		fclose(gc->pShaderAnalysisHandle);
 #endif
 	
+    SWTextureStopWorkers(gc);
+    GLES2Free(IMG_NULL, gc->pui16IndexScratch);
+    gc->pui16IndexScratch = IMG_NULL;
+    KRM_WaitForAllResources(&gc->psSharedState->sBufferObjectKRM, GLES2_DEFAULT_WAIT_RETRIES);
+    KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->sBufferObjectKRM);
+
 	/* Free vao state */
 	FreeVertexArrayObjectState(gc);
 
@@ -1175,8 +1152,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	PVRUniPatchDestroyContext(gc->sProgram.pvUniPatchContext);
 	gc->sProgram.pvUniPatchContext = IMG_NULL;
 
-	gc->bSwTexOpFin = IMG_TRUE;
-	sceKernelWaitThreadEnd(gc->hSwTexOpThrd, SCE_NULL, SCE_NULL);
+    SWTextureDestroy(gc);
 
 	if (gc->pvUNCHeap)
 	{
@@ -1187,10 +1163,6 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 		sceHeapDeleteHeap(gc->pvCDRAMHeap);
 	}
 
-	GLES2Free(IMG_NULL, gc->pvUltThreadStorage);
-	sceUltUlthreadRuntimeDestroy((SceUltUlthreadRuntime *)gc->pvUltRuntime);
-	GLES2Free(IMG_NULL, gc->pvUltRuntimeWorkArea);
-	GLES2Free(IMG_NULL, gc->pvUltRuntime);
 
 	return bPass;
 }	

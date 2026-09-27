@@ -18,6 +18,7 @@
  *****************************************************************************/
 
 #include "context.h"
+#include "texregion.h"
 #include "spanpack.h"
 #include "drveglext.h"
 
@@ -625,37 +626,16 @@ IMG_INTERNAL IMG_VOID CopyTexture32Bits(IMG_UINT32 *pui32Dest, const IMG_UINT32 
 					IMG_UINT32 ui32SrcStrideInBytes, GLES2MipMapLevel *psMipLevel,
 					IMG_BOOL bUseDstStride)
 {
-	IMG_UINT32 i;
-
-	/* Difference between stride and copied width */
-	IMG_UINT32 ui32SrcRowByteIncrement = ui32SrcStrideInBytes - (ui32Width * sizeof(IMG_UINT32));
-	IMG_UINT32 ui32DstRowIncrement;
-
-
-	if (bUseDstStride)
-	{
-	        ui32DstRowIncrement = psMipLevel->ui32Width - ui32Width;
-	}
-	else
-	{
-	        ui32DstRowIncrement = 0;
-	}
-
-	do
-	{
-		i = ui32Width;
-
-		do
-		{
-			*pui32Dest++ = *pui32Src++;
-
-		}while(--i);
-
-		pui32Dest += ui32DstRowIncrement;
-		pui32Src = (IMG_UINT32 *)((IMG_UINTPTR_T)pui32Src + ui32SrcRowByteIncrement);
-
-	}
-	while(--ui32Height);
+    IMG_UINT32 row, bytes = ui32Width * sizeof(IMG_UINT32);
+    IMG_UINT32 dstStride = (bUseDstStride ? psMipLevel->ui32Width : ui32Width) * sizeof(IMG_UINT32);
+    if(!ui32Width || !ui32Height) return;
+    if(ui32SrcStrideInBytes == bytes && dstStride == bytes)
+    { GLES2MemCopy(pui32Dest, pui32Src, bytes * ui32Height); return; }
+    for(row = 0; row < ui32Height; ++row)
+    {
+        GLES2MemCopy((IMG_UINT8 *)pui32Dest + row * dstStride,
+                     (const IMG_UINT8 *)pui32Src + row * ui32SrcStrideInBytes, bytes);
+    }
 }
 
 /***********************************************************************************
@@ -671,36 +651,16 @@ IMG_INTERNAL IMG_VOID CopyTexture16Bits(IMG_UINT16 *pui16Dest, const IMG_UINT16 
 					IMG_UINT32 ui32SrcStrideInBytes, GLES2MipMapLevel *psMipLevel,
 					IMG_BOOL bUseDstStride)
 {
-	IMG_UINT32 i;
-
-	/* Difference between stride and copied width */
-	IMG_UINT32 ui32SrcRowByteIncrement = ui32SrcStrideInBytes - (ui32Width * sizeof(IMG_UINT16));
-	IMG_UINT32 ui32DstRowIncrement;
-
-
-	if (bUseDstStride)
-	{
-	        ui32DstRowIncrement = psMipLevel->ui32Width - ui32Width;
-	}
-	else
-	{
-	        ui32DstRowIncrement = 0;
-	}
-
-	do
-	{
-		i = ui32Width;
-
-		do
-		{
-			*pui16Dest++ = *pui16Src++;
-		}while(--i);
-
-		pui16Dest += ui32DstRowIncrement;
-		pui16Src = (IMG_UINT16 *)((IMG_UINTPTR_T)pui16Src + ui32SrcRowByteIncrement);
-
-	}
-	while(--ui32Height);
+    IMG_UINT32 row, bytes = ui32Width * sizeof(IMG_UINT16);
+    IMG_UINT32 dstStride = (bUseDstStride ? psMipLevel->ui32Width : ui32Width) * sizeof(IMG_UINT16);
+    if(!ui32Width || !ui32Height) return;
+    if(ui32SrcStrideInBytes == bytes && dstStride == bytes)
+    { GLES2MemCopy(pui16Dest, pui16Src, bytes * ui32Height); return; }
+    for(row = 0; row < ui32Height; ++row)
+    {
+        GLES2MemCopy((IMG_UINT8 *)pui16Dest + row * dstStride,
+                     (const IMG_UINT8 *)pui16Src + row * ui32SrcStrideInBytes, bytes);
+    }
 }
 
 
@@ -718,36 +678,16 @@ IMG_INTERNAL IMG_VOID CopyTexture8Bits(IMG_UINT8 *pui8Dest, const IMG_UINT8 *pui
 				       IMG_UINT32 ui32SrcStrideInBytes, GLES2MipMapLevel *psMipLevel,
 				       IMG_BOOL bUseDstStride)
 {
-	IMG_UINT32 i;
-
-	/* Difference between stride and copied width */
-	IMG_UINT32 ui32SrcRowByteIncrement = ui32SrcStrideInBytes - (ui32Width * sizeof(IMG_UINT8));
-	IMG_UINT32 ui32DstRowIncrement;
-
-
-	if (bUseDstStride)
-	{
-	        ui32DstRowIncrement = psMipLevel->ui32Width - ui32Width;
-	}
-	else
-	{
-	        ui32DstRowIncrement = 0;
-	}
-
-	do
-	{
-		i = ui32Width;
-
-		do
-		{
-			*pui8Dest++ = *pui8Src++;
-		}while(--i);
-
-		pui8Dest += ui32DstRowIncrement;
-		pui8Src  += ui32SrcRowByteIncrement;
-
-	}
-	while(--ui32Height);
+    IMG_UINT32 row, bytes = ui32Width * sizeof(IMG_UINT8);
+    IMG_UINT32 dstStride = (bUseDstStride ? psMipLevel->ui32Width : ui32Width) * sizeof(IMG_UINT8);
+    if(!ui32Width || !ui32Height) return;
+    if(ui32SrcStrideInBytes == bytes && dstStride == bytes)
+    { GLES2MemCopy(pui8Dest, pui8Src, bytes * ui32Height); return; }
+    for(row = 0; row < ui32Height; ++row)
+    {
+        GLES2MemCopy((IMG_UINT8 *)pui8Dest + row * dstStride,
+                     (const IMG_UINT8 *)pui8Src + row * ui32SrcStrideInBytes, bytes);
+    }
 }
 
 
@@ -1656,6 +1596,8 @@ static IMG_VOID TexParameterfv(GLES2Context *gc, GLenum eTarget, GLenum ePname, 
 	GLES2TextureParamState *psParamState;
 	IMG_UINT32 ui32Target;
 	GLenum eParam;
+    GLES2TextureParamState oldState;
+    IMG_UINT32 oldConsistency;
 
 	PVR_UNREFERENCED_PARAMETER(vecVersion);
 
@@ -1758,7 +1700,10 @@ bad_enum:
 	}
 
 	psTex = gc->sTexture.apsBoundTexture[gc->sState.sTexture.ui32ActiveTexture][ui32Target];
+    SWTextureWait(gc, psTex);
 	psParamState = &psTex->sState;
+    oldState = *psParamState;
+    oldConsistency = psTex->ui32LevelsConsistent;
 
 	switch (ePname) 
 	{
@@ -1924,7 +1869,9 @@ bad_enum:
 		}
 	}
 
-	gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
+	if(!memcmp(&oldState, psParamState, sizeof(oldState)))
+    { psTex->ui32LevelsConsistent = oldConsistency; return; }
+    gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
 }
 
 
@@ -2185,7 +2132,20 @@ GL_APICALL void GL_APIENTRY glBindTexture(GLenum target, GLuint texture)
 
 	GLES2_TIME_START(GLES2_TIMES_glBindTexture);
 
-	switch(target)
+    if(target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP)
+    {
+        IMG_UINT32 index = target == GL_TEXTURE_2D ? GLES2_TEXTURE_TARGET_2D : GLES2_TEXTURE_TARGET_CEM;
+        GLES2Texture *bound = gc->sTexture.apsBoundTexture[gc->sState.sTexture.ui32ActiveTexture][index];
+        IMG_BOOL unchanged;
+        PVRSRVLockMutex(gc->psSharedState->hPrimaryLock);
+        unchanged = gc->psSharedState->ui32RefCount == 1 && bound && bound->sNamedItem.ui32Name == texture;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+        unchanged = unchanged && !bound->psEGLImageTarget && !bound->psEGLImageSource;
+#endif
+        PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
+        if(unchanged) { GLES2_TIME_STOP(GLES2_TIMES_glBindTexture); return; }
+    }
+    switch(target)
 	{
 		case GL_TEXTURE_2D:
 		{
@@ -2472,6 +2432,7 @@ bad_enum:
 		return IMG_NULL;
 
 	psTex = gc->sTexture.apsBoundTexture[gc->sState.sTexture.ui32ActiveTexture][ui32Target];
+    SWTextureWait(gc, psTex);
 
 	if(!psTex)
 	{
@@ -2543,6 +2504,7 @@ bad_value:
 	}
 
 	psTex = gc->sTexture.apsBoundTexture[gc->sState.sTexture.ui32ActiveTexture][ui32Target];
+    SWTextureWait(gc, psTex);
 
 	GLES_ASSERT(psTex != NULL);
 
@@ -3552,6 +3514,41 @@ bad_op:
 					  Host texture data memory is already allocated/may have already
 					  been uploaded to HW. Subdata will need to be integrated/uploaded.
 ************************************************************************************/
+/* Write only the changed rectangle when no draw or transfer still owns the allocation. */
+static IMG_BOOL UploadIdleTextureRegion(GLES2Context *gc, GLES2Texture *texture, GLES2MipMapLevel *level,
+    IMG_UINT32 x, IMG_UINT32 y, IMG_UINT32 width, IMG_UINT32 height,
+    IMG_UINT32 sourceBytes, const IMG_VOID *pixels, PFNCopyTextureData copy)
+{
+    IMG_UINT32 layout, type, stride, bytes = texture->psFormat->ui32TotalBytesPerTexel;
+    IMG_UINT8 *converted;
+    GLES2MipMapLevel region = *level;
+    if(level->ui32Level || texture->ui32TextureTarget != GLES2_TEXTURE_TARGET_2D ||
+       !texture->psMemInfo || texture->psFormat->ui32NumChunks != 1 ||
+       (texture->ui32HWFlags & (GLES2_COMPRESSED | GLES2_FLOAT)) || (bytes != 1 && bytes != 2 && bytes != 4)) return IMG_FALSE;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    if(texture->psEGLImageSource || texture->psEGLImageTarget) return IMG_FALSE;
+#endif
+    type = texture->sState.aui32StateWord1[0] & ~EURASIA_PDS_DOUTT1_TEXTYPE_CLRMSK;
+    if(type == EURASIA_PDS_DOUTT1_TEXTYPE_TILED) layout = 1;
+#if !defined(SGX_FEATURE_HYBRID_TWIDDLING)
+    else if(type == EURASIA_PDS_DOUTT1_TEXTYPE_2D && !(texture->ui32HWFlags & GLES2_NONPOW2)) layout = 2;
+#endif
+    else return IMG_FALSE;
+    if(KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &texture->sResource)) return IMG_FALSE;
+    if(!FlushAttachableIfNeeded(gc, (GLES2FrameBufferAttachable *)level,
+        GLES2_SCHEDULE_HW_LAST_IN_SCENE | GLES2_SCHEDULE_HW_WAIT_FOR_3D)) return IMG_FALSE;
+    if(SGX2DQueryBlitsComplete(gc->ps3DDevData, texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
+    converted = GLES2Malloc(gc, width * height * bytes);
+    if(!converted) return IMG_FALSE;
+    stride = ALIGNCOUNT(width * sourceBytes, gc->sState.sClientPixel.ui32UnpackAlignment);
+    region.ui32Width = width; region.ui32Height = height;
+    copy(converted, pixels, width, height, stride, &region, IMG_FALSE);
+    PVRTextureWriteRegion(texture->psMemInfo->pvLinAddr, converted, layout,
+        level->ui32Width, level->ui32Height, x, y, width, height, bytes, width * bytes);
+    GLES2Free(IMG_NULL, converted);
+    return IMG_TRUE;
+}
+
 GL_APICALL void GL_APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset,
 										GLint yoffset, GLsizei width, GLsizei height,
 										GLenum format, GLenum type, const void *pixels)
@@ -4288,7 +4285,7 @@ bad_op:
 			/* directly upload subtexture data to the new device memory, using hardware */
 			{
 				IMG_UINT32 ui32SubTexBufferSize = (IMG_UINT32)width * (IMG_UINT32)height * psTargetTexFormat->ui32TotalBytesPerTexel;
-				IMG_UINT8 *pui8SubTexBuffer = (IMG_UINT8 *) GLES2MallocHeapUNC(gc, ui32SubTexBufferSize);
+				IMG_UINT8 *pui8SubTexBuffer = (IMG_UINT8 *) SWTextureAllocStaging(gc, ui32SubTexBufferSize);
 				const IMG_UINT8 *pui8Src = (const IMG_UINT8 *)pixels;
 				IMG_UINT32 ui32SrcRowSize = (IMG_UINT32)width * ui32SrcBytesPerPixel;
 				IMG_UINT32 ui32OffsetInBytes = 0;
@@ -4425,13 +4422,18 @@ bad_op:
 
 				}
 				
-				GLES2FreeAsync(gc, pui8SubTexBuffer);
+				SWTextureFreeStaging(gc, pui8SubTexBuffer, ui32SubTexBufferSize);
 			}
 		}
 
 
 		/* otherwise use the software subtexture uploading approach
 		   readback the whole level texture data and copy subtexture data to the host memory. */
+
+        if(!bHWSubTextureUploaded)
+            bHWSubTextureUploaded = UploadIdleTextureRegion(gc, psTex, psMipLevel,
+                (IMG_UINT32)xoffset, (IMG_UINT32)yoffset, (IMG_UINT32)width, (IMG_UINT32)height,
+                ui32SrcBytesPerPixel, pixels, pfnCopyTextureData);
 
 		if(!bHWSubTextureUploaded)
 		{
@@ -4655,6 +4657,15 @@ GL_APICALL void GL_APIENTRY glCompressedTexImage2D(GLenum target, GLint level, G
 	
 	psMipLevel = &psTex->psMipLevel[ui32Level];
 
+    if(pvPixels && (psTexFormat->ePixelFormat == PVRSRV_PIXEL_FORMAT_BC1 || psTexFormat->ePixelFormat == PVRSRV_PIXEL_FORMAT_BC3) &&
+       ((psTex->sState.ui32MinFilter & ~EURASIA_PDS_DOUTT0_MIPMAPCLAMP_CLRMSK) == EURASIA_PDS_DOUTT0_NOTMIPMAP) &&
+       TextureUploadNativeBC(gc, psTex, internalformat, psTexFormat, width, height, pvPixels))
+    {
+        gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
+        GLES2_INC_PIXEL_COUNT(GLES2_TIMES_glCompressedTexImage2D, width * height);
+        GLES2_TIME_STOP(GLES2_TIMES_glCompressedTexImage2D);
+        return;
+    }
 	pui8Dest = TextureCreateLevel(gc, psTex, ui32Level, internalformat, psTexFormat, (IMG_UINT32)width, (IMG_UINT32)height);
 	
 
@@ -6492,7 +6503,7 @@ bad_op:
 			IMG_UINT32 ui32OffsetInBytes = 0;
 
 			IMG_UINT32 ui32SubTexBufferSize = (IMG_UINT32)(sSpanInfo.ui32Width * sSpanInfo.ui32Height * ui32BytesPerTexel);
-			IMG_UINT8 *pui8SubTexBuffer = GLES2MallocHeapUNC(gc, ui32SubTexBufferSize);
+			IMG_UINT8 *pui8SubTexBuffer = SWTextureAllocStaging(gc, ui32SubTexBufferSize);
 
 			SGX_QUEUETRANSFER sQueueTransfer;
 
@@ -6651,7 +6662,7 @@ bad_op:
 				}
 			}
 
-			GLES2FreeAsync(gc, pui8SubTexBuffer);
+			SWTextureFreeStaging(gc, pui8SubTexBuffer, ui32SubTexBufferSize);
 		}
 #endif
 

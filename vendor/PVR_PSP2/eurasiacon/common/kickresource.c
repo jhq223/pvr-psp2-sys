@@ -677,22 +677,28 @@ static IMG_BOOL WaitUntilResourceIsNotNeeded(const KRMKickResourceManager *psMgr
 	IMG_UINT32 ui32TriesLeft;
 
 	ui32TriesLeft = ui32MaxRetries;
+    ++((KRMResource *)psResource)->ui32Waiters;
 
 	while(IsResourceNeeded(psMgr, psResource) && IsResourceKicked(psMgr, psResource))
 	{
 		if(!ui32TriesLeft)
 		{
-			return IMG_FALSE;
+			--((KRMResource *)psResource)->ui32Waiters;
+            return IMG_FALSE;
 		}
 
-		if(sceGpuSignalWait(sceKernelGetTLSAddr(0x44), 100000) != PVRSRV_OK)
+        KRM_EXIT_CRITICAL_SECTION(psMgr);
+        IMG_BOOL failed = sceGpuSignalWait(sceKernelGetTLSAddr(0x44), 100000) != PVRSRV_OK;
+        KRM_ENTER_CRITICAL_SECTION(psMgr);
+        if(failed)
 		{
 			PVR_DPF((PVR_DBG_MESSAGE, "WaitUntilResourceIsNotNeeded: PVRSRVEventObjectWait failed"));
 			ui32TriesLeft--;
 		}
 	}
 
-	return IMG_TRUE;
+	--((KRMResource *)psResource)->ui32Waiters;
+    return IMG_TRUE;
 }
 
 
@@ -850,7 +856,7 @@ static IMG_VOID ReclaimUnneededResourcesInList(KRMKickResourceManager *psMgr,
 
 	while(psNextResource)
 	{
-		if(IsResourceNeeded(psMgr, psNextResource))
+		if(psNextResource->ui32Waiters || IsResourceNeeded(psMgr, psNextResource))
 		{
 			/* It is needed. Skip it */
 			psNextResource = psNextResource->psNext;
@@ -1247,3 +1253,17 @@ IMG_INTERNAL IMG_BOOL KRM_FlushUnKickedResource(const KRMKickResourceManager *ps
 /******************************************************************************
  End of file (kickresource.c)
 ******************************************************************************/
+
+/* Move a deleted object's own storage to the ghost list without allocating. */
+IMG_INTERNAL IMG_VOID KRM_RetireResource(KRMKickResourceManager *manager, KRMResource *resource)
+{
+    KRM_ENTER_CRITICAL_SECTION(manager);
+    if(resource->psPrev) resource->psPrev->psNext = resource->psNext;
+    else if(manager->psResourceList == resource) manager->psResourceList = resource->psNext;
+    if(resource->psNext) resource->psNext->psPrev = resource->psPrev;
+    resource->psPrev = IMG_NULL;
+    resource->psNext = manager->psGhostList;
+    if(manager->psGhostList) manager->psGhostList->psPrev = resource;
+    manager->psGhostList = resource;
+    KRM_EXIT_CRITICAL_SECTION(manager);
+}

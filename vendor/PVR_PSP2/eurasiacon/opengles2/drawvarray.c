@@ -1938,7 +1938,10 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
 	GLES2VertexArrayObjectMachine *psVAOMachine = &(gc->sVAOMachine);
 	GLES2BufferObject *psIndexBO = psVAOMachine->psBoundElementBuffer;
 
-	/* Setup pvTmpIndices using the current VAO's bound element buffer object */
+    if(psIndexBO && psIndexBO->bRangeCached && !psIndexBO->bMapped &&
+       psIndexBO->uiRangeOffset == (IMG_UINTPTR_T)pvIndices && psIndexBO->ui32RangeCount == ui32Count && psIndexBO->ui32RangeType == eType)
+    { *pui32MinIndex = psIndexBO->ui32RangeMin; *pui32MaxIndex = psIndexBO->ui32RangeMax; return; }
+    /* Setup pvTmpIndices using the current VAO's bound element buffer object */
 	if (psIndexBO) 
 	{
 	    GLES_ASSERT(psIndexBO->psMemInfo);
@@ -2022,7 +2025,13 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
 		}
 	}
 
-	*pui32MinIndex = ui32MinIndex;
+    if(psIndexBO && !psIndexBO->bMapped)
+    {
+        psIndexBO->bRangeCached = IMG_TRUE; psIndexBO->uiRangeOffset = (IMG_UINTPTR_T)pvIndices;
+        psIndexBO->ui32RangeCount = ui32Count; psIndexBO->ui32RangeType = eType;
+        psIndexBO->ui32RangeMin = ui32MinIndex; psIndexBO->ui32RangeMax = ui32MaxIndex;
+    }
+    *pui32MinIndex = ui32MinIndex;
 	*pui32MaxIndex = ui32MaxIndex;
 }
 
@@ -2037,10 +2046,19 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
  Returns            : An array of ui32Count of IMG_UINT16 indices transformed from pvIndices.
  Description        : 
 ************************************************************************************/
-static const IMG_UINT16* TransformIndicesTo16Bits(GLES2Context *gc, IMG_UINT32 ui32Count, GLenum eType, const IMG_VOID *pvIndices)
+static const IMG_UINT16* TransformIndicesTo16Bits(GLES2Context *gc, IMG_UINT32 ui32Count, GLenum eType, const IMG_VOID *pvIndices, IMG_BOOL scratch)
 {
 	IMG_UINT32 i;
-	IMG_UINT16 *pui16OutIndices = GLES2Malloc(gc, sizeof(IMG_UINT16)*ui32Count);
+	IMG_UINT16 *pui16OutIndices;
+    if(ui32Count > 0x7fffffffU) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_NULL; }
+    if(scratch && gc->ui32IndexScratchCapacity < ui32Count)
+    {
+        IMG_UINT32 capacity = MAX(ui32Count, MIN(gc->ui32IndexScratchCapacity, 0x3fffffffU) * 2U);
+        IMG_UINT16 *memory = GLES2Realloc(gc, gc->pui16IndexScratch, capacity * sizeof(IMG_UINT16));
+        if(!memory) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_NULL; }
+        gc->pui16IndexScratch = memory; gc->ui32IndexScratchCapacity = capacity;
+    }
+    pui16OutIndices = scratch ? gc->pui16IndexScratch : GLES2Malloc(gc, sizeof(IMG_UINT16) * ui32Count);
 	GLES2VertexArrayObjectMachine *psVAOMachine = &(gc->sVAOMachine);
 	GLES2BufferObject *psIndexBO = psVAOMachine->psBoundElementBuffer;
 
@@ -2078,7 +2096,7 @@ static const IMG_UINT16* TransformIndicesTo16Bits(GLES2Context *gc, IMG_UINT32 u
 	else
 	{
 		PVR_DPF((PVR_DBG_MESSAGE,"TransformIndicesTo16Bits: Unsupported index type 0x%X", eType));
-		GLES2Free(IMG_NULL, pui16OutIndices);
+		if(!scratch) GLES2Free(IMG_NULL, pui16OutIndices);
 		pui16OutIndices = IMG_NULL;
 	}
 
@@ -2144,7 +2162,7 @@ static void AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
  Returns            : -
  Description        : Attaches all textures used by the given shader to the current surface.
 ************************************************************************************/
-static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2ProgramShader *psShader)
+static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2ProgramShader *psShader, GLES2Texture **seen, IMG_UINT32 *seenCount)
 {
 	IMG_UINT32                i;
 	const GLES2TextureSampler *psTextureSampler;
@@ -2188,14 +2206,19 @@ static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
 				/* PRQA S ??? 1 */ /* ui8SamplerType has been prevalidated in glLinkProgram */
 				psTex = gc->sTexture.apsBoundTexture[ui8ImageUnit][ui8SamplerType];
 				GLES_ASSERT(psTex);
+                SWTextureWait(gc, psTex);
+                IMG_UINT32 duplicate;
+                for(duplicate = 0; duplicate < *seenCount; ++duplicate) if(seen[duplicate] == psTex) break;
+                if(duplicate != *seenCount) continue;
 
-				if(psTex->bResidence)
+                if(psTex->bResidence)
 				{
 					AttachTextureDependency(gc, psTex);
 
 					/* Attach this texture to the current frame of the current render surface */
-					KRM_Attach(&gc->psSharedState->psTextureManager->sKRM, gc->psRenderSurface, 
-							   &gc->psRenderSurface->sRenderStatusUpdate, &psTex->sResource);
+					if(KRM_Attach(&gc->psSharedState->psTextureManager->sKRM, gc->psRenderSurface,
+                                  &gc->psRenderSurface->sRenderStatusUpdate, &psTex->sResource))
+                        seen[(*seenCount)++] = psTex;
 				}
 			}
 		}
@@ -2213,9 +2236,11 @@ static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
 ************************************************************************************/
 static IMG_VOID AttachAllUsedResourcesToCurrentSurface(GLES2Context *gc)
 {
+    GLES2Texture *seen[GLES2_MAX_TEXTURE_UNITS * 2];
+    IMG_UINT32 seenCount = 0;
 	/* Attach the textures used in the vertex and in the fragment shader */
-	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sVertex);
-	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sFragment);
+	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sVertex, seen, &seenCount);
+	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sFragment, seen, &seenCount);
 
 	/* Attach USSE fragment variants (set up by SetupUSEFragmentShader) */
 	KRM_Attach(&gc->psSharedState->sUSEShaderVariantKRM, 
@@ -2237,6 +2262,8 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 	GLES2VertexArrayObjectMachine *psVAOMachine = &(gc->sVAOMachine);
 	GLES2VertexArrayObject *psVAO = gc->sVAOMachine.psActiveVAO;
 
+    GLES2BufferObject *seen[GLES2_MAX_VERTEX_ATTRIBS + 1];
+    IMG_UINT32 seenCount = 0, j;
 	GLES_ASSERT(VAO(gc));
 
 
@@ -2265,7 +2292,9 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 
 			if(psBufObj && !psAPMachine->bIsCurrentState)
 			{
-				KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource);
+				for(j = 0; j < seenCount; ++j) if(seen[j] == psBufObj) break;
+                if(j == seenCount && KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource))
+                    seen[seenCount++] = psBufObj;
 			}
 		}
 	}
@@ -2277,7 +2306,9 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 
 		psBufObj = psVAOMachine->psBoundElementBuffer;
 
-		KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource);
+		for(j = 0; j < seenCount; ++j) if(seen[j] == psBufObj) break;
+                if(j == seenCount && KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource))
+                    seen[seenCount++] = psBufObj;
 	}
 }
 
@@ -2716,7 +2747,7 @@ bad_enum:
 	/* All 8-bit indices must be promoted to 16-bit */
 	if(GL_UNSIGNED_BYTE == type)
 	{
-		pui16Elements = TransformIndicesTo16Bits(gc, (IMG_UINT32)count, type, indices);
+		pui16Elements = TransformIndicesTo16Bits(gc, (IMG_UINT32)count, type, indices, IMG_TRUE);
 
 		if(!pui16Elements)
 		{
@@ -2751,7 +2782,7 @@ bad_enum:
 	/* Call the actual draw element function */
 	(*pfnDrawElements)(gc, mode, 0, (IMG_UINT32)count, ui32NumIndices, type, pui16Elements, ui32VertexStart, ui32VertexCount); 
 
-	if(bIndicesWerePromoted) 
+	if(bIndicesWerePromoted && pui16Elements != gc->pui16IndexScratch)
 	{
 		GLES2Free(IMG_NULL, (IMG_VOID *)((IMG_UINTPTR_T)pui16Elements));
 	}
@@ -4083,7 +4114,7 @@ bad_value:
 	{
 		for(i = 0; i < ui32ActualPrimCount; i++)
 		{
-			ppvElements[i] = TransformIndicesTo16Bits(gc, pui32ActualCount[i], type, ppvActualIndices[i]);
+			ppvElements[i] = TransformIndicesTo16Bits(gc, pui32ActualCount[i], type, ppvActualIndices[i], IMG_FALSE);
 			
 			if(!ppvElements[i])
 			{

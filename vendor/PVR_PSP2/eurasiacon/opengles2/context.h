@@ -140,6 +140,7 @@ typedef struct GLES2ContextSharedStateTAG
 	PVRSRV_CLIENT_MEM_INFO *psLineStripStaticIndicesMemInfo;
 	
 	GLES2SurfaceFlushList *psFlushList;
+    GLES2SurfaceFlushList **ppsFlushTail;
 	PVRSRV_MUTEX_HANDLE hFlushListLock;
 
 #ifdef PDUMP
@@ -279,12 +280,10 @@ struct GLES2Context_TAG
 
 	IMG_PVOID pvUNCHeap;
 	IMG_PVOID pvCDRAMHeap;
-	IMG_PVOID pvUltRuntime;
-	IMG_PVOID pvUltRuntimeWorkArea;
-	IMG_PVOID *pvUltThreadStorage;
-	IMG_UINT32 ui32AsyncTexOpNum;
-	IMG_BOOL bSwTexOpFin;
-	SceUID hSwTexOpThrd;
+    struct SWTextureState *psSWTexture;
+    IMG_UINT16 *pui16IndexScratch;
+    IMG_UINT32 ui32IndexScratchCapacity;
+
 
 }; /* The typedef is in ogles2_types.h */
 
@@ -360,7 +359,7 @@ __inline IMG_VOID *GLES2MemalignHeapUNC(GLES2Context *gc, unsigned int size, uns
 __inline IMG_VOID *GLES2CallocHeapUNC(GLES2Context *gc, unsigned int size)
 {
 	IMG_VOID *ret = sceHeapAllocHeapMemory(gc->pvUNCHeap, size);
-	sceClibMemset(ret, 0, size);
+	if(ret) sceClibMemset(ret, 0, size);
 	return ret;
 }
 #define GLES2ReallocHeapUNC(X,Y,Z)	(IMG_VOID*)sceHeapReallocHeapMemory(X->pvUNCHeap, Y, Z)
@@ -408,11 +407,16 @@ __inline IMG_VOID *GLES2MemalignHeapCDRAM(GLES2Context *gc, unsigned int size, u
 __inline IMG_VOID *GLES2CallocHeapCDRAM(GLES2Context *gc, unsigned int size)
 {
 	IMG_VOID *ret = sceHeapAllocHeapMemory(gc->pvCDRAMHeap, size);
-	sceClibMemset(ret, 0, size);
+	if(ret) sceClibMemset(ret, 0, size);
 	return ret;
 }
 #define GLES2ReallocHeapCDRAM(X,Y,Z)	(IMG_VOID*)sceHeapReallocHeapMemory(X->pvCDRAMHeap, Y, Z)
 
+
+typedef struct GLES2HeapMemInfo {
+    PVRSRV_CLIENT_MEM_INFO info;
+    IMG_VOID *heap;
+} GLES2HeapMemInfo;
 
 __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32Attribs, IMG_UINT32 ui32Size, IMG_UINT32 ui32Alignment, PVRSRV_CLIENT_MEM_INFO **ppsMemInfo)
 {
@@ -429,7 +433,7 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
-	psMemInfo = GLES2Calloc(gc, sizeof(PVRSRV_CLIENT_MEM_INFO));
+	psMemInfo = GLES2Calloc(gc, sizeof(GLES2HeapMemInfo));
 
 	if (!psMemInfo)
 	{
@@ -437,7 +441,8 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
-	psMemInfo->pvLinAddr = mem;
+	((GLES2HeapMemInfo *)psMemInfo)->heap = (ui32Attribs & PVRSRV_MAP_GC_MMU) ? gc->pvCDRAMHeap : gc->pvUNCHeap;
+    psMemInfo->pvLinAddr = mem;
 
 	if (!(ui32Attribs & PVRSRV_MEM_NO_SYNCOBJ))
 	{
@@ -466,12 +471,14 @@ __inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_ME
 		PVRSRVFreeSyncInfo(gc->ps3DDevData, psMemInfo->psClientSyncInfo);
 	}
 
-	GLES2Free(gc, psMemInfo->pvLinAddr);
+	sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, psMemInfo->pvLinAddr);
 	GLES2Free(IMG_NULL, psMemInfo);
 
 	return PVRSRV_OK;
 }
 
+
+#include "psp2/swtexop.h"
 
 #endif /* _CONTEXT_ */
 

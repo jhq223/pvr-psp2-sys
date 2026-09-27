@@ -185,6 +185,7 @@ typedef struct GLES2TextureRec
 	   of MIP levels updates) can be batched up and loaded into video memory in all together.
 	*/
 	IMG_BOOL bResidence;
+    IMG_BOOL bUploadFailed;
 
 	/* Whether this texture has ever been ghosted */
 	IMG_BOOL bHasEverBeenGhosted;
@@ -342,6 +343,9 @@ IMG_VOID ReadBackTiledData(IMG_VOID *pvDest, const IMG_VOID *pvSrc,
 						   const GLES2Texture *psTex);
 IMG_VOID TextureRemoveResident(GLES2Context *gc, GLES2Texture *psTex);
 typedef IMG_VOID (*PFNReadSpan)(const GLES2PixelSpanInfo *);
+
+IMG_INTERNAL IMG_BOOL TextureUploadNativeBC(GLES2Context *gc, GLES2Texture *texture, GLenum internalFormat,
+    const GLES2TextureFormat *format, IMG_UINT32 width, IMG_UINT32 height, const IMG_VOID *pixels);
 
 IMG_BOOL TextureMakeResident(GLES2Context *gc, GLES2Texture *psTex);
 IMG_UINT32 IsTextureConsistent(GLES2Context *gc, GLES2Texture *psTex, IMG_UINT32 ui32OverloadTexLayout, IMG_BOOL bCheckForRenderingLoop);

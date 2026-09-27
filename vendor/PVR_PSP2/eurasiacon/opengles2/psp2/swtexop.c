@@ -1,287 +1,460 @@
-﻿
 #include <kernel.h>
-#include <ult.h>
-
-#include "..\context.h"
-#include "..\texture.h"
+#include "../context.h"
+#include "../texture.h"
 #include "swtexop.h"
 
-int32_t sceKernelAtomicAddAndGet32(volatile int32_t* ptr, int32_t value);
+#define SW_RETIRE_COUNT 8192U
+#define SW_WORKERS 4U
+#define SW_POOL_COUNT 8U
+#define SW_NONE 0xffffffffU
+/* Mipmap workers can retire two buffers per face/level while the producer waits. */
+#define SW_RETIRE_RESERVE (SW_WORKERS * 12U * GLES2_MAX_TEXTURE_MIPMAP_LEVELS)
 
-static IMG_VOID *pvAsDstPtr[8192];
+typedef struct SWJob {
+    IMG_UINT32 next, state;
+    IMG_UINT64 serial;
+    SceUID thread;
+    IMG_BOOL mip;
+    GLES2Texture *texture;
+    IMG_VOID *source;
+    PVRSRV_CLIENT_SYNC_INFO *sync;
+    IMG_SID modification;
+    union { SWTexUploadArg upload; SWTexMipGenArg mipmap; } args;
+} SWJob;
 
-static IMG_INT32 _SWTextureUploadEntry(IMG_UINT32 arg)
+typedef struct SWRetired {
+    IMG_VOID *pointer;
+    IMG_UINT64 serial, exclude;
+    IMG_UINT32 stagingSize;
+} SWRetired;
+
+typedef struct SWTextureState {
+    GLES2Context *gc;
+    SceKernelLwMutexWork lock;
+    SceUID work, wake, done, space, cleanup;
+    SceUID workers[SW_WORKERS];
+    IMG_UINT32 workerCount, jobCount, freeJob, firstJob, lastJob, active;
+    SWJob *jobs;
+    IMG_UINT64 serial;
+    IMG_BOOL stopping, closing;
+    SWRetired retired[SW_RETIRE_COUNT];
+    IMG_UINT32 head, tail, count;
+    IMG_VOID *pool[SW_POOL_COUNT];
+    IMG_UINT32 poolSize[SW_POOL_COUNT];
+} SWTextureState;
+
+static IMG_VOID Lock(SWTextureState *state) { sceKernelLockLwMutex(&state->lock, 1, SCE_NULL); }
+static IMG_VOID Unlock(SWTextureState *state) { sceKernelUnlockLwMutex(&state->lock, 1); }
+
+static IMG_BOOL HasJob(SWTextureState *state, GLES2Texture *texture, SceUID caller)
 {
-	SWTexUploadArg *psArg = (SWTexUploadArg *)arg;
-
-	TextureUpload(&psArg->psTex, &psArg->psMipLevel, psArg->ui32OffsetInBytes, &psArg->psTexFmt, psArg->ui32Face, psArg->ui32Lod, psArg->ui32TopUsize, psArg->ui32TopVsize);
-
-	sceKernelAtomicAddAndGet32(&psArg->gc->ui32AsyncTexOpNum, -1);
-
-	PVRSRVModifyCompleteSyncOps(psArg->gc->psSysContext->psConnection, psArg->hOpSyncObj);
-	PVRSRVDestroySyncInfoModObj(psArg->gc->psSysContext->psConnection, psArg->hOpSyncObj);
-
-	GLES2Free(IMG_NULL, psArg);
-
-	return sceUltUlthreadExit(0);
+    IMG_UINT32 i;
+    for(i = 0; i < state->jobCount; ++i)
+        if(state->jobs[i].state && state->jobs[i].thread != caller &&
+           (!texture || state->jobs[i].texture == texture)) return IMG_TRUE;
+    return IMG_FALSE;
 }
 
-static IMG_INT32 _SWTextureMipGenEntry(IMG_UINT32 arg)
+IMG_VOID SWTextureWait(GLES2Context *gc, GLES2Texture *texture)
 {
-	SWTexMipGenArg *psArg = (SWTexMipGenArg *)arg;
-
-	MakeTextureMipmapLevelsSoftware(psArg->gc, psArg->psTex, psArg->ui32Face, psArg->ui32MaxFace, psArg->bIsNonPow2);
-
-	sceKernelAtomicAddAndGet32(&psArg->gc->ui32AsyncTexOpNum, -1);
-
-	if (psArg->psSyncInfo)
-	{
-		PVRSRVModifyCompleteSyncOps(psArg->gc->psSysContext->psConnection, psArg->hOpSyncObj);
-		PVRSRVDestroySyncInfoModObj(psArg->gc->psSysContext->psConnection, psArg->hOpSyncObj);
-	}
-
-	GLES2Free(IMG_NULL, psArg);
-
-	return sceUltUlthreadExit(0);
-}
-
-IMG_INTERNAL IMG_VOID SWTextureUpload(
-	GLES2Context *gc, GLES2Texture *psTex, GLES2MipMapLevel *psMipLevel, IMG_UINT32 ui32OffsetInBytes, GLES2TextureFormat *psTexFmt,
-	IMG_UINT32 ui32Face, IMG_UINT32 ui32Lod, IMG_UINT32 ui32TopUsize, IMG_UINT32 ui32TopVsize)
-{
-	PVRSRV_ERROR eResult;
-	IMG_INT32 i;
-	IMG_INT32 ret;
-	IMG_PVOID arg = GLES2Malloc(gc, sizeof(SWTexUploadArg));
-	SWTexUploadArg *psArg = (SWTexUploadArg *)arg;
-	psArg->gc = gc;
-	GLES2MemCopy(&psArg->psTex, psTex, sizeof(GLES2Texture));
-	GLES2MemCopy(&psArg->psMipLevel, psMipLevel, sizeof(GLES2MipMapLevel));
-	GLES2MemCopy(&psArg->psTexFmt, psTexFmt, sizeof(GLES2TextureFormat));
-	psArg->ui32OffsetInBytes = ui32OffsetInBytes;
-	psArg->ui32Face = ui32Face;
-	psArg->ui32Lod = ui32Lod;
-	psArg->ui32TopUsize = ui32TopUsize;
-	psArg->ui32TopVsize = ui32TopVsize;
-
-#if defined(GLES2_EXTENSION_EGL_IMAGE)
-	if (psTex->psEGLImageTarget)
-	{
-		psArg->psSyncInfo = psTex->psEGLImageTarget->psMemInfo->psClientSyncInfo;
-	}
-	else
-#endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
-	{
-		psArg->psSyncInfo = psTex->psMemInfo->psClientSyncInfo;
-	}
-
-	do
-	{
-		eResult = SGX2DQueryBlitsComplete(gc->ps3DDevData, psArg->psSyncInfo, IMG_TRUE);
-	} while (eResult == PVRSRV_ERROR_TIMEOUT);
-
-	PVRSRVCreateSyncInfoModObj(gc->psSysContext->psConnection, &psArg->hOpSyncObj);
-
-	PVRSRVModifyPendingSyncOps(
-		gc->psSysContext->psConnection,
-		psArg->hOpSyncObj,
-		&psArg->psSyncInfo,
-		1,
-		PVRSRV_MODIFYSYNCOPS_FLAGS_WO_INC,
-		IMG_NULL,
-		IMG_NULL);
-
-	sceKernelAtomicAddAndGet32(&gc->ui32AsyncTexOpNum, 1);
-
-	for (i = 0; i < gc->sAppHints.ui32SwTexOpMaxUltNum; i++)
-	{
-		if (gc->pvUltThreadStorage[i] == IMG_NULL)
-		{
-			gc->pvUltThreadStorage[i] = GLES2Malloc(gc, _SCE_ULT_ULTHREAD_SIZE);
-			break;
-		}
-	}
-
-	ret = sceUltUlthreadCreate(
-		gc->pvUltThreadStorage[i],
-		"OGLES2SWTextureUpload",
-		_SWTextureUploadEntry,
-		(IMG_UINT32)arg,
-		SCE_NULL,
-		0,
-		gc->pvUltRuntime,
-		SCE_NULL);
-
-	if (ret != SCE_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "sceUltUlthreadCreate failed with code 0x%X. Consider increasing apphint SwTexOpMaxUltNum value", ret));
-		abort();
-	}
-}
-
-IMG_INTERNAL IMG_BOOL SWMakeTextureMipmapLevels(GLES2Context *gc, GLES2Texture *psTex, IMG_UINT32 ui32Face, IMG_UINT32 ui32MaxFace, IMG_BOOL bIsNonPow2)
-{
-	PVRSRV_ERROR eResult;
-	IMG_INT32 i;
-	IMG_INT32 ret;
-	IMG_PVOID arg = GLES2Malloc(gc, sizeof(SWTexMipGenArg));
-	SWTexMipGenArg *psArg = (SWTexMipGenArg *)arg;
-	psArg->gc = gc;
-	psArg->psTex = psTex;
-	psArg->ui32Face = ui32Face;
-	psArg->ui32MaxFace = ui32MaxFace;
-	psArg->bIsNonPow2 = bIsNonPow2;
-
-#if defined(GLES2_EXTENSION_EGL_IMAGE)
-	if (psTex->psEGLImageTarget)
-	{
-		psArg->psSyncInfo = psTex->psEGLImageTarget->psMemInfo->psClientSyncInfo;
-	}
-	else
-#endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
-	{
-		if (psTex->psMemInfo)
-		{
-			psArg->psSyncInfo = psTex->psMemInfo->psClientSyncInfo;
-		}
-		else
-		{
-			psArg->psSyncInfo = IMG_NULL;
-		}
-	}
-
-	if (psArg->psSyncInfo)
-	{
-		do
-		{
-			eResult = SGX2DQueryBlitsComplete(gc->ps3DDevData, psArg->psSyncInfo, IMG_TRUE);
-		} while (eResult == PVRSRV_ERROR_TIMEOUT);
-
-		PVRSRVCreateSyncInfoModObj(gc->psSysContext->psConnection, &psArg->hOpSyncObj);
-
-		PVRSRVModifyPendingSyncOps(
-			gc->psSysContext->psConnection,
-			psArg->hOpSyncObj,
-			&psArg->psSyncInfo,
-			1,
-			PVRSRV_MODIFYSYNCOPS_FLAGS_WO_INC,
-			IMG_NULL,
-			IMG_NULL);
-	}
-
-	sceKernelAtomicAddAndGet32(&gc->ui32AsyncTexOpNum, 1);
-
-	for (i = 0; i < gc->sAppHints.ui32SwTexOpMaxUltNum; i++)
-	{
-		if (gc->pvUltThreadStorage[i] == IMG_NULL)
-		{
-			gc->pvUltThreadStorage[i] = GLES2Malloc(gc, _SCE_ULT_ULTHREAD_SIZE);
-			break;
-		}
-	}
-
-	ret = sceUltUlthreadCreate(
-		gc->pvUltThreadStorage[i],
-		"OGLES2SWTextureMipGen",
-		_SWTextureMipGenEntry,
-		(IMG_UINT32)arg,
-		SCE_NULL,
-		0,
-		gc->pvUltRuntime,
-		SCE_NULL);
-
-	if (ret != SCE_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "sceUltUlthreadCreate failed with code 0x%X. Consider increasing apphint SwTexOpMaxUltNum value", ret));
-		abort();
-	}
-
-	return IMG_TRUE;
-}
-
-IMG_VOID texOpAsyncAddForCleanup(GLES2Context *gc, IMG_PVOID pvPtr)
-{
-	IMG_UINT32 i = 0;
-
-	for (i = 0; i < sizeof(pvAsDstPtr) / 4; i++)
-	{
-		if (pvAsDstPtr[i] == IMG_NULL)
-		{
-			pvAsDstPtr[i] = pvPtr;
-			return;
-		}
-	}
-
-	PVR_DPF((PVR_DBG_WARNING, "texOpAsyncAddForCleanup: not enough space in free queue"));
-
-    /* Queue exhaustion must not free a buffer still read by SW or HWTQ.
-     * This is only the bounded-queue fallback, not a wait on every upload. */
-    while (gc->ui32AsyncTexOpNum)
+    SWTextureState *state = gc->psSWTexture;
+    SceUID caller = sceKernelGetThreadId();
+    if(!state) return;
+    Lock(state);
+    while(HasJob(state, texture, caller))
     {
-        sceKernelDelayThread(10);
+        sceKernelClearEventFlag(state->done, ~1U);
+        Unlock(state);
+        sceKernelWaitEventFlag(state->done, 1, SCE_KERNEL_EVF_WAITMODE_OR, SCE_NULL, SCE_NULL);
+        Lock(state);
     }
-    SGXWaitTransfer(gc->ps3DDevData, gc->psSysContext->hTransferContext);
-	GLES2Free(gc, pvPtr);
+    Unlock(state);
 }
 
-IMG_INT32 texOpAsyncCleanupThread(IMG_UINT32 argSize, IMG_VOID *pArgBlock)
+IMG_BOOL SWTextureBusy(GLES2Context *gc, GLES2Texture *texture)
 {
-	IMG_UINT32 i = 0;
-	IMG_UINT32 ui32TriggerTime = 0;
-	GLES2Context *gc = *(GLES2Context **)pArgBlock;
+    SWTextureState *state = gc->psSWTexture;
+    IMG_BOOL busy;
+    if(!state) return IMG_FALSE;
+    Lock(state); busy = HasJob(state, texture, sceKernelGetThreadId()); Unlock(state);
+    return busy;
+}
 
-	sceClibMemset(pvAsDstPtr, 0, sizeof(pvAsDstPtr));
+static IMG_BOOL CanRetire(SWTextureState *state, const SWRetired *entry)
+{
+    IMG_UINT32 i;
+    for(i = 0; i < state->jobCount; ++i)
+    {
+        SWJob *job = &state->jobs[i];
+        if(job->state && job->serial <= entry->serial && job->serial != entry->exclude &&
+           (job->mip || job->source == entry->pointer)) return IMG_FALSE;
+    }
+    return IMG_TRUE;
+}
 
-	while (!gc->bSwTexOpFin)
-	{
-		ui32TriggerTime = sceKernelGetProcessTimeLow();
+static IMG_VOID ReleaseRetired(SWTextureState *state, SWRetired *entry)
+{
+    IMG_UINT32 i;
+    if(entry->stagingSize && entry->stagingSize <= 1024U * 1024U)
+    {
+        Lock(state);
+        for(i = 0; i < SW_POOL_COUNT && !state->closing; ++i)
+        {
+            if(!state->pool[i])
+            {
+                state->pool[i] = entry->pointer;
+                state->poolSize[i] = entry->stagingSize;
+                Unlock(state);
+                return;
+            }
+        }
+        Unlock(state);
+    }
+    if(entry->stagingSize) sceHeapFreeHeapMemory(state->gc->pvUNCHeap, entry->pointer);
+    else GLES2Free(state->gc, entry->pointer);
+}
 
-		for (i = 0; i < sizeof(pvAsDstPtr) / 4; i++)
-		{
-			if (pvAsDstPtr[i] != IMG_NULL && !gc->ui32AsyncTexOpNum)
-			{
-				SGXWaitTransfer(gc->ps3DDevData, gc->psSysContext->hTransferContext);
-				GLES2Free(gc, pvAsDstPtr[i]);
-				pvAsDstPtr[i] = IMG_NULL;
-			}
-		}
+static IMG_INT32 Cleanup(SceSize size, IMG_VOID *argument)
+{
+    SWTextureState *state = *(SWTextureState **)argument;
+    SWRetired batch[64];
+    PVR_UNREFERENCED_PARAMETER(size);
+    for(;;)
+    {
+        IMG_UINT32 examined, count = 0, i;
+        IMG_BOOL again, closing;
+        Lock(state);
+        examined = state->count;
+        while(examined-- && count < 64)
+        {
+            SWRetired entry = state->retired[state->head];
+            state->head = (state->head + 1) % SW_RETIRE_COUNT;
+            --state->count;
+            if(CanRetire(state, &entry)) batch[count++] = entry;
+            else
+            {
+                state->retired[state->tail] = entry;
+                state->tail = (state->tail + 1) % SW_RETIRE_COUNT;
+                ++state->count;
+            }
+        }
+        again = count == 64;
+        closing = state->closing && !state->count;
+        if(count) sceKernelSetEventFlag(state->space, 1);
+        Unlock(state);
+        if(count)
+        {
+            /* The fixed batch contains only transfers submitted before this wait. */
+            while(SGXWaitTransfer(state->gc->ps3DDevData, state->gc->psSysContext->hTransferContext) != PVRSRV_OK)
+                sceKernelDelayThread(1000);
+            for(i = 0; i < count; ++i) ReleaseRetired(state, &batch[i]);
+        }
+        if(closing) break;
+        if(!again)
+            sceKernelWaitEventFlag(state->wake, 1,
+                SCE_KERNEL_EVF_WAITMODE_OR | SCE_KERNEL_EVF_WAITMODE_CLEAR_PAT, SCE_NULL, SCE_NULL);
+    }
+    return 0;
+}
 
-		for (i = 0; i < gc->sAppHints.ui32SwTexOpMaxUltNum; i++)
-		{
-			if (gc->pvUltThreadStorage[i] != IMG_NULL)
-			{
-				if (sceUltUlthreadTryJoin(gc->pvUltThreadStorage[i], NULL) == SCE_OK)
-				{
-					GLES2Free(IMG_NULL, gc->pvUltThreadStorage[i]);
-					gc->pvUltThreadStorage[i] = IMG_NULL;
-				}
-			}
-		}
+static IMG_VOID Retire(GLES2Context *gc, IMG_VOID *pointer, IMG_UINT32 stagingSize)
+{
+    SWTextureState *state = gc->psSWTexture;
+    SWRetired entry;
+    IMG_UINT32 i, limit = SW_RETIRE_COUNT - SW_RETIRE_RESERVE;
+    SceUID caller = sceKernelGetThreadId();
+    if(!pointer) return;
+    if(!state)
+    {
+        while(SGXWaitTransfer(gc->ps3DDevData, gc->psSysContext->hTransferContext) != PVRSRV_OK)
+            sceKernelDelayThread(1000);
+        if(stagingSize) sceHeapFreeHeapMemory(gc->pvUNCHeap, pointer);
+        else GLES2Free(gc, pointer);
+        return;
+    }
+    entry.pointer = pointer;
+    entry.stagingSize = stagingSize;
+    entry.exclude = 0;
+    Lock(state);
+    entry.serial = state->serial;
+    for(i = 0; i < state->jobCount; ++i)
+        if(state->jobs[i].state && state->jobs[i].thread == caller)
+        { entry.exclude = state->jobs[i].serial; limit = SW_RETIRE_COUNT; break; }
+    while(state->count >= limit)
+    {
+        sceKernelClearEventFlag(state->space, ~1U);
+        sceKernelSetEventFlag(state->wake, 1);
+        Unlock(state);
+        sceKernelWaitEventFlag(state->space, 1, SCE_KERNEL_EVF_WAITMODE_OR, SCE_NULL, SCE_NULL);
+        Lock(state);
+    }
+    state->retired[state->tail] = entry;
+    state->tail = (state->tail + 1) % SW_RETIRE_COUNT;
+    ++state->count;
+    sceKernelSetEventFlag(state->wake, 1);
+    Unlock(state);
+}
 
-		sceKernelDelayThread(gc->sAppHints.ui32SwTexOpCleanupDelay);
-	}
+IMG_VOID texOpAsyncAddForCleanup(GLES2Context *gc, IMG_PVOID pointer) { Retire(gc, pointer, 0); }
 
-	for (i = 0; i < sizeof(pvAsDstPtr) / 4; i++)
-	{
-		if (pvAsDstPtr[i] != IMG_NULL && !gc->ui32AsyncTexOpNum)
-		{
-			SGXWaitTransfer(gc->ps3DDevData, gc->psSysContext->hTransferContext);
-			GLES2Free(gc, pvAsDstPtr[i]);
-			pvAsDstPtr[i] = IMG_NULL;
-		}
-	}
+static IMG_UINT32 StagingSize(IMG_UINT32 size)
+{
+    IMG_UINT32 capacity = 4096;
+    if(size > 1024U * 1024U) return size;
+    while(capacity < size) capacity <<= 1;
+    return capacity;
+}
 
-	for (i = 0; i < gc->sAppHints.ui32SwTexOpMaxUltNum; i++)
-	{
-		if (gc->pvUltThreadStorage[i] != IMG_NULL)
-		{
-			if (sceUltUlthreadJoin(gc->pvUltThreadStorage[i], NULL) == SCE_OK)
-			{
-				GLES2Free(IMG_NULL, gc->pvUltThreadStorage[i]);
-				gc->pvUltThreadStorage[i] = IMG_NULL;
-			}
-		}
-	}
+IMG_VOID *SWTextureAllocStaging(GLES2Context *gc, IMG_UINT32 size)
+{
+    SWTextureState *state = gc->psSWTexture;
+    IMG_UINT32 i, capacity = StagingSize(size);
+    IMG_VOID *pointer = IMG_NULL;
+    if(state)
+    {
+        Lock(state);
+        for(i = 0; i < SW_POOL_COUNT; ++i)
+            if(state->pool[i] && state->poolSize[i] == capacity)
+            { pointer = state->pool[i]; state->pool[i] = IMG_NULL; break; }
+        Unlock(state);
+    }
+    return pointer ? pointer : GLES2MallocHeapUNC(gc, capacity);
+}
 
-	return sceKernelExitDeleteThread(0);
+IMG_VOID SWTextureFreeStaging(GLES2Context *gc, IMG_VOID *pointer, IMG_UINT32 size)
+{ Retire(gc, pointer, StagingSize(size)); }
+
+static IMG_VOID Execute(SWJob *job)
+{
+    if(job->mip)
+    {
+        SWTexMipGenArg *arg = &job->args.mipmap;
+        MakeTextureMipmapLevelsSoftware(arg->gc, arg->psTex, arg->ui32Face, arg->ui32MaxFace, arg->bIsNonPow2);
+    }
+    else
+    {
+        SWTexUploadArg *arg = &job->args.upload;
+        TextureUpload(&arg->psTex, &arg->psMipLevel, arg->ui32OffsetInBytes, &arg->psTexFmt,
+                      arg->ui32Face, arg->ui32Lod, arg->ui32TopUsize, arg->ui32TopVsize);
+    }
+}
+
+static IMG_INT32 Worker(SceSize size, IMG_VOID *argument)
+{
+    SWTextureState *state = *(SWTextureState **)argument;
+    PVR_UNREFERENCED_PARAMETER(size);
+    for(;;)
+    {
+        SWJob *job;
+        IMG_UINT32 index;
+        sceKernelWaitSema(state->work, 1, SCE_NULL);
+        Lock(state);
+        if(state->firstJob == SW_NONE)
+        { IMG_BOOL stop = state->stopping; Unlock(state); if(stop) break; else continue; }
+        index = state->firstJob;
+        job = &state->jobs[index];
+        state->firstJob = job->next;
+        if(state->firstJob == SW_NONE) state->lastJob = SW_NONE;
+        job->thread = sceKernelGetThreadId();
+        Unlock(state);
+        Execute(job);
+        if(job->modification)
+        {
+            PVRSRVModifyCompleteSyncOps(state->gc->psSysContext->psConnection, job->modification);
+            PVRSRVDestroySyncInfoModObj(state->gc->psSysContext->psConnection, job->modification);
+        }
+        Lock(state);
+        job->state = 0;
+        job->thread = -1;
+        job->next = state->freeJob;
+        state->freeJob = index;
+        --state->active;
+        sceKernelSetEventFlag(state->done, 1);
+        sceKernelSetEventFlag(state->wake, 1);
+        Unlock(state);
+    }
+    return 0;
+}
+
+static IMG_BOOL Dispatch(GLES2Context *gc, SWJob *input)
+{
+    SWTextureState *state = gc->psSWTexture;
+    PVRSRV_ERROR error;
+    IMG_UINT32 index = SW_NONE;
+    /* Object mutation is serialized with earlier CPU uploads, even for a sync fallback. */
+    SWTextureWait(gc, input->texture);
+    if(input->sync)
+    {
+        do { error = SGX2DQueryBlitsComplete(gc->ps3DDevData, input->sync, IMG_TRUE); }
+        while(error == PVRSRV_ERROR_TIMEOUT);
+        if(error != PVRSRV_OK) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_FALSE; }
+    }
+    PVRSRVLockMutex(gc->psSharedState->hPrimaryLock);
+    if(state)
+    {
+        Lock(state);
+        /* Shared objects use the synchronous path, so another context cannot miss a CPU job. */
+        if(!state->stopping && state->workerCount && gc->psSharedState->ui32RefCount == 1)
+        {
+            index = state->freeJob;
+            if(index != SW_NONE) state->freeJob = state->jobs[index].next;
+        }
+        Unlock(state);
+    }
+    if(index == SW_NONE) { PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock); Execute(input); return IMG_TRUE; }
+    input->modification = 0;
+    if(input->sync)
+    {
+        error = PVRSRVCreateSyncInfoModObj(gc->psSysContext->psConnection, &input->modification);
+        if(error == PVRSRV_OK)
+        {
+            error = PVRSRVModifyPendingSyncOps(gc->psSysContext->psConnection, input->modification,
+                &input->sync, 1, PVRSRV_MODIFYSYNCOPS_FLAGS_WO_INC, IMG_NULL, IMG_NULL);
+            if(error != PVRSRV_OK)
+                PVRSRVDestroySyncInfoModObj(gc->psSysContext->psConnection, input->modification);
+        }
+        if(error != PVRSRV_OK)
+        {
+            Lock(state); state->jobs[index].next = state->freeJob; state->freeJob = index; Unlock(state);
+            PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
+            Execute(input);
+            return IMG_TRUE;
+        }
+    }
+    Lock(state);
+    input->state = 1;
+    input->serial = ++state->serial;
+    input->thread = -1;
+    input->next = SW_NONE;
+    state->jobs[index] = *input;
+    if(state->lastJob != SW_NONE) state->jobs[state->lastJob].next = index;
+    else state->firstJob = index;
+    state->lastJob = index;
+    ++state->active;
+    Unlock(state);
+    sceKernelSignalSema(state->work, 1);
+    PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
+    return IMG_TRUE;
+}
+
+IMG_INTERNAL IMG_VOID SWTextureUpload(GLES2Context *gc, GLES2Texture *texture, GLES2MipMapLevel *level,
+    IMG_UINT32 offset, GLES2TextureFormat *format, IMG_UINT32 face, IMG_UINT32 lod, IMG_UINT32 width, IMG_UINT32 height)
+{
+    SWJob job = {0};
+    SWTexUploadArg *arg = &job.args.upload;
+    SWTextureWait(gc, texture);
+    job.texture = texture; job.source = level->pui8Buffer;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    job.sync = texture->psEGLImageTarget ? texture->psEGLImageTarget->psMemInfo->psClientSyncInfo : texture->psMemInfo->psClientSyncInfo;
+#else
+    job.sync = texture->psMemInfo->psClientSyncInfo;
+#endif
+    arg->gc = gc; arg->psTex = *texture; arg->psMipLevel = *level; arg->psTexFmt = *format;
+    arg->ui32OffsetInBytes = offset; arg->ui32Face = face; arg->ui32Lod = lod;
+    arg->ui32TopUsize = width; arg->ui32TopVsize = height;
+    if(!Dispatch(gc, &job)) texture->bUploadFailed = IMG_TRUE;
+}
+
+IMG_INTERNAL IMG_BOOL SWMakeTextureMipmapLevels(GLES2Context *gc, GLES2Texture *texture,
+    IMG_UINT32 face, IMG_UINT32 maxFace, IMG_BOOL nonPowerOfTwo)
+{
+    SWJob job = {0};
+    SWTexMipGenArg *arg = &job.args.mipmap;
+    job.texture = texture; job.mip = IMG_TRUE;
+    job.sync = texture->psMemInfo ? texture->psMemInfo->psClientSyncInfo : IMG_NULL;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+    if(texture->psEGLImageTarget) job.sync = texture->psEGLImageTarget->psMemInfo->psClientSyncInfo;
+#endif
+    arg->gc = gc; arg->psTex = texture; arg->ui32Face = face; arg->ui32MaxFace = maxFace;
+    arg->bIsNonPow2 = nonPowerOfTwo;
+    return Dispatch(gc, &job);
+}
+
+IMG_VOID SWTextureStopWorkers(GLES2Context *gc)
+{
+    SWTextureState *state = gc->psSWTexture;
+    IMG_UINT32 i;
+    if(!state) return;
+    SWTextureWait(gc, IMG_NULL);
+    Lock(state); state->stopping = IMG_TRUE; Unlock(state);
+    for(i = 0; i < state->workerCount; ++i) sceKernelSignalSema(state->work, 1);
+    for(i = 0; i < state->workerCount; ++i)
+    {
+        sceKernelWaitThreadEnd(state->workers[i], SCE_NULL, SCE_NULL);
+        sceKernelDeleteThread(state->workers[i]);
+    }
+    state->workerCount = 0;
+}
+
+IMG_VOID SWTextureDestroy(GLES2Context *gc)
+{
+    SWTextureState *state = gc->psSWTexture;
+    IMG_UINT32 i;
+    if(!state) return;
+    SWTextureStopWorkers(gc);
+    Lock(state); state->closing = IMG_TRUE; sceKernelSetEventFlag(state->wake, 1); Unlock(state);
+    sceKernelWaitThreadEnd(state->cleanup, SCE_NULL, SCE_NULL);
+    sceKernelDeleteThread(state->cleanup);
+    for(i = 0; i < SW_POOL_COUNT; ++i)
+        if(state->pool[i]) sceHeapFreeHeapMemory(gc->pvUNCHeap, state->pool[i]);
+    sceKernelDeleteSema(state->work);
+    sceKernelDeleteEventFlag(state->space); sceKernelDeleteEventFlag(state->done); sceKernelDeleteEventFlag(state->wake);
+    sceKernelDeleteLwMutex(&state->lock);
+    GLES2Free(IMG_NULL, state->jobs); GLES2Free(IMG_NULL, state);
+    gc->psSWTexture = IMG_NULL;
+}
+
+IMG_BOOL SWTextureInit(GLES2Context *gc)
+{
+    SWTextureState *state = calloc(1, sizeof(*state));
+    IMG_UINT32 i, count;
+    IMG_BOOL locked = IMG_FALSE;
+    if(!state) return IMG_FALSE;
+    state->gc = gc;
+    state->work = state->wake = state->done = state->space = state->cleanup = -1;
+    state->firstJob = state->lastJob = state->freeJob = SW_NONE;
+    count = gc->sAppHints.bDisableAsyncTextureOp ? 0 : MIN(gc->sAppHints.ui32SwTexOpThreadNum, SW_WORKERS);
+    state->jobCount = count ? MIN(gc->sAppHints.ui32SwTexOpMaxUltNum, 4096U) : 0;
+    if(!state->jobCount) count = 0;
+    if(state->jobCount)
+    {
+        state->jobs = calloc(state->jobCount, sizeof(*state->jobs));
+        if(!state->jobs) goto failed;
+        for(i = 0; i < state->jobCount; ++i)
+        { state->jobs[i].next = i + 1; state->jobs[i].thread = -1; }
+        state->jobs[state->jobCount - 1].next = SW_NONE;
+        state->freeJob = 0;
+    }
+    if(sceKernelCreateLwMutex(&state->lock, "GLES2 texture jobs", 0, 0, SCE_NULL) < 0) goto failed;
+    locked = IMG_TRUE;
+    state->wake = sceKernelCreateEventFlag("GLES2 retire wake", 0, 0, SCE_NULL);
+    state->done = sceKernelCreateEventFlag("GLES2 jobs done", SCE_KERNEL_EVF_ATTR_MULTI, 0, SCE_NULL);
+    state->space = sceKernelCreateEventFlag("GLES2 retire space", SCE_KERNEL_EVF_ATTR_MULTI, 0, SCE_NULL);
+    state->work = sceKernelCreateSema("GLES2 upload work", 0, 0, state->jobCount + SW_WORKERS, SCE_NULL);
+    if(state->wake < 0 || state->done < 0 || state->space < 0 || state->work < 0) goto failed;
+    gc->psSWTexture = state;
+    state->cleanup = sceKernelCreateThread("GLES2 texture retire", Cleanup, SCE_KERNEL_LOWEST_PRIORITY_USER,
+        16 * 1024, 0, 0, SCE_NULL);
+    if(state->cleanup < 0) goto failed;
+    if(sceKernelStartThread(state->cleanup, sizeof(state), &state) < 0) goto failed;
+    for(i = 0; i < count; ++i)
+    {
+        SceUID thread = sceKernelCreateThread("GLES2 texture worker", Worker, gc->sAppHints.ui32SwTexOpThreadPriority,
+            64 * 1024, 0, gc->sAppHints.ui32SwTexOpThreadAffinity, SCE_NULL);
+        if(thread < 0) break;
+        if(sceKernelStartThread(thread, sizeof(state), &state) < 0) { sceKernelDeleteThread(thread); break; }
+        state->workers[state->workerCount++] = thread;
+    }
+    /* Failure to start a worker leaves a fully usable synchronous upload path. */
+    return IMG_TRUE;
+failed:
+    gc->psSWTexture = IMG_NULL;
+    if(state->cleanup >= 0) sceKernelDeleteThread(state->cleanup);
+    if(state->work >= 0) sceKernelDeleteSema(state->work);
+    if(state->space >= 0) sceKernelDeleteEventFlag(state->space);
+    if(state->done >= 0) sceKernelDeleteEventFlag(state->done);
+    if(state->wake >= 0) sceKernelDeleteEventFlag(state->wake);
+    if(locked) sceKernelDeleteLwMutex(&state->lock);
+    GLES2Free(IMG_NULL, state->jobs); GLES2Free(IMG_NULL, state);
+    return IMG_FALSE;
 }

@@ -54,7 +54,8 @@ static IMG_INT32 _dcSwapChainThread(SceSize argSize, void *pArgBlock)
 
 		sceKernelWaitEventFlag(s_hSwapChainPendingEvf, 1, SCE_KERNEL_EVF_WAITMODE_OR | SCE_KERNEL_EVF_WAITMODE_CLEAR_PAT, NULL, NULL);
 
-		PVRSRVWaitSyncOp(s_hKernelSwapChainSync[s_ui32CurrentSwapChainIdx], IMG_NULL);
+        if(!s_flipChainExists) break;
+        PVRSRVWaitSyncOp(s_hKernelSwapChainSync[s_ui32CurrentSwapChainIdx], IMG_NULL);
 
 		fbInfo.base = s_pvCurrentNewBuf[s_ui32CurrentSwapChainIdx];
 		sceDisplaySetFrameBuf(&fbInfo, SCE_DISPLAY_UPDATETIMING_NEXTVSYNC);
@@ -353,7 +354,10 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 	IMG_UINT32 alignedSize;
 	IMG_UINT32 swapChainAff = 0;
 	IMG_INT32 i, x, y;
-	PSP2_SWAPCHAIN *psSwapChain;
+	PSP2_SWAPCHAIN *psSwapChain = IMG_NULL;
+    SceUID readyEvfId = -1, pendingEvfId = -1, thrdId = -1;
+    IMG_UINT32 syncCount = 0;
+    PVRSRV_ERROR error = PVRSRV_ERROR_OUT_OF_MEMORY;
 	PVRSRV_CONNECTION *psConnection;
 
 	if (!hDevice
@@ -367,6 +371,7 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
 
+    *phSwapChain = 0;
 	if (ui32BufferCount > PSP2_SWAPCHAIN_MAX_BUFFER_NUM)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVCreateDCSwapChain: Too many buffers"));
@@ -396,29 +401,29 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 	else
 		swapChainAff = SCE_KERNEL_CPU_MASK_USER_0;
 
-	SceUID readyEvfId = sceKernelCreateEventFlag("DCSwapChainReadyEvf", 0, 0, NULL);
+	readyEvfId = sceKernelCreateEventFlag("DCSwapChainReadyEvf", 0, 0, NULL);
 	if (readyEvfId < 0)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVCreateDCSwapChain: Failed to create swap chain ready event"));
-		return PVRSRV_ERROR_UNABLE_TO_CREATE_EVENT;
+		error = PVRSRV_ERROR_UNABLE_TO_CREATE_EVENT; goto failed;
 	}
 
 	s_hSwapChainReadyEvf = readyEvfId;
 
-	SceUID pendingEvfId = sceKernelCreateEventFlag("DCSwapChainPendingEvf", 0, 0, NULL);
+	pendingEvfId = sceKernelCreateEventFlag("DCSwapChainPendingEvf", 0, 0, NULL);
 	if (pendingEvfId < 0)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVCreateDCSwapChain: Failed to create swap chain pending event"));
-		return PVRSRV_ERROR_UNABLE_TO_CREATE_EVENT;
+		error = PVRSRV_ERROR_UNABLE_TO_CREATE_EVENT; goto failed;
 	}
 
 	s_hSwapChainPendingEvf = pendingEvfId;
 
-	SceUID thrdId = sceKernelCreateThread("DCSwapChainThread", _dcSwapChainThread, 64, SCE_KERNEL_THREAD_STACK_SIZE_MIN, 0, swapChainAff, NULL);
+	thrdId = sceKernelCreateThread("DCSwapChainThread", _dcSwapChainThread, 64, SCE_KERNEL_THREAD_STACK_SIZE_MIN, 0, swapChainAff, NULL);
 	if (thrdId < 0)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVCreateDCSwapChain: Failed to create swap chain thread"));
-		return PVRSRV_ERROR_UNABLE_TO_CREATE_THREAD;
+		error = PVRSRV_ERROR_UNABLE_TO_CREATE_THREAD; goto failed;
 	}
 
 	psConnection = (PVRSRV_CONNECTION *)hDevice;
@@ -427,10 +432,11 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 	if (!psSwapChain)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVCreateDCSwapChain: Alloc failed"));
-		return PVRSRV_ERROR_OUT_OF_MEMORY;
+		goto failed;
 	}
 
-	psSwapChain->psConnection = psConnection;
+    PVRSRVMemSet(psSwapChain, 0, sizeof(*psSwapChain));
+    psSwapChain->psConnection = psConnection;
 	psSwapChain->hSwapChainReadyEvf = readyEvfId;
 	psSwapChain->hSwapChainPendingEvf = pendingEvfId;
 	psSwapChain->hSwapChainThread = thrdId;
@@ -442,7 +448,9 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 	alignedSize = ALIGN(psSwapChain->sDims.ui32ByteStride * psSwapChain->sDims.ui32Height, 256 * 1024);
 
 	for (i = 0; i < PSP2_SWAPCHAIN_MAX_PENDING_COUNT; i++) {
-		PVRSRVCreateSyncInfoModObj((PVRSRV_CONNECTION *)hDevice, &s_hKernelSwapChainSync[i]);
+		error = PVRSRVCreateSyncInfoModObj((PVRSRV_CONNECTION *)hDevice, &s_hKernelSwapChainSync[i]);
+        if(error != PVRSRV_OK) goto failed;
+        ++syncCount;
 	}
 
 	for (i = 0; i < ui32BufferCount; i++) {
@@ -453,7 +461,9 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 			alignedSize,
 			NULL);
 
-		sceKernelGetMemBlockBase(psSwapChain->hDispMemUID[i], &psSwapChain->pDispBufVaddr[i]);
+		if(psSwapChain->hDispMemUID[i] < 0 ||
+           sceKernelGetMemBlockBase(psSwapChain->hDispMemUID[i], &psSwapChain->pDispBufVaddr[i]) < 0)
+        { error = PVRSRV_ERROR_OUT_OF_MEMORY; goto failed; }
 
 		psSwapChain->sDispMemInfo[i].psNext = IMG_NULL;
 		psSwapChain->sDispMemInfo[i].pvLinAddr = psSwapChain->pDispBufVaddr[i];
@@ -473,14 +483,34 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateDCSwapChain(IMG_HANDLE	hDevice,
 
 	s_flipChainExists = IMG_TRUE;
 
-	sceKernelStartThread(thrdId, 4, &psSwapChain);
+	s_ui32CurrentSwapChainIdx = 0;
+    if(sceKernelStartThread(thrdId, sizeof(psSwapChain), &psSwapChain) < 0)
+    { s_flipChainExists = IMG_FALSE; error = PVRSRV_ERROR_UNABLE_TO_CREATE_THREAD; goto failed; }
 
 	/* Assign output */
 	*phSwapChain = (IMG_SID)psSwapChain;
 	/* optional ID (in/out) */
 	*pui32SwapChainID = 0;
 
-	return PVRSRV_OK;
+    return PVRSRV_OK;
+failed:
+    if(psSwapChain)
+    {
+        for(i = 0; i < ui32BufferCount; ++i)
+            if(psSwapChain->hDispMemUID[i] > 0) sceKernelFreeMemBlock(psSwapChain->hDispMemUID[i]);
+        PVRSRVFreeUserModeMem(psSwapChain);
+    }
+    while(syncCount)
+    {
+        --syncCount;
+        PVRSRVDestroySyncInfoModObj((PVRSRV_CONNECTION *)hDevice, s_hKernelSwapChainSync[syncCount]);
+        s_hKernelSwapChainSync[syncCount] = 0;
+    }
+    if(thrdId >= 0) sceKernelDeleteThread(thrdId);
+    if(pendingEvfId >= 0) sceKernelDeleteEventFlag(pendingEvfId);
+    if(readyEvfId >= 0) sceKernelDeleteEventFlag(readyEvfId);
+    s_hSwapChainReadyEvf = s_hSwapChainPendingEvf = SCE_UID_INVALID_UID;
+    return error;
 }
 
 /*!
@@ -513,12 +543,15 @@ IMG_HANDLE hSwapChain)
 
 	psSwapChain = (PSP2_SWAPCHAIN *)hSwapChain;
 
-	s_psOldBufSyncInfo = IMG_NULL;
+    /* Finish the last submitted flip before stopping its worker. */
+    sceKernelWaitEventFlag(s_hSwapChainReadyEvf, 1, SCE_KERNEL_EVF_WAITMODE_OR, NULL, NULL);
+    s_psOldBufSyncInfo = IMG_NULL;
 
-	s_flipChainExists = IMG_FALSE;
+    s_flipChainExists = IMG_FALSE;
 
 	sceKernelSetEventFlag(s_hSwapChainPendingEvf, 1);
 	sceKernelWaitThreadEnd(psSwapChain->hSwapChainThread, NULL, NULL);
+    sceKernelDeleteThread(psSwapChain->hSwapChainThread);
 
 	sceKernelDeleteEventFlag(psSwapChain->hSwapChainReadyEvf);
 	sceKernelDeleteEventFlag(psSwapChain->hSwapChainPendingEvf);
@@ -700,5 +733,6 @@ IMG_HANDLE hSwapChain)
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
 
+	if(s_flipChainExists) sceKernelWaitEventFlag(s_hSwapChainReadyEvf, 1, SCE_KERNEL_EVF_WAITMODE_OR, NULL, NULL);
 	return PVRSRV_OK;
 }

@@ -67,8 +67,10 @@ typedef struct SceHeapWorkInternal {
 	} info;
 #endif	/* USE_HEAPINFO */
 
-	SceHeapMspaceLink	prim;
-	unsigned int		memblockType;
+    unsigned int memblockType;
+    SceHeapMspaceLink *spare;
+    /* The primary mspace starts at prim + 1; metadata must precede prim. */
+    SceHeapMspaceLink prim;
 } SceHeapWorkInternal;
 
 #define SCE_HEAP_OFFSET_TO_VALID_HEAP	768				// FIXME:

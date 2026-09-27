@@ -59,6 +59,13 @@ GLES2Uniform *FindUniformFromLocation(GLES2Context *gc, GLES2Program *psProgram,
 IMG_VOID GetUniformData(GLES2Context *gc, GLES2Program *psProgram, GLES2Uniform *psUniform, 
 						IMG_INT32 i32Location, IMG_UINT32 *pui32NumFloats, IMG_FLOAT *pfDstData);
 
+static __inline IMG_UINT32 UniformNameHash(const IMG_CHAR *name, IMG_UINT32 length)
+{
+    IMG_UINT32 h = 2166136261U, i;
+    for(i = 0; i < length; ++i) h = (h ^ (IMG_UINT8)name[i]) * 16777619U;
+    return h;
+}
+
 GLenum ConvertGLSLtoGLType(GLSLTypeSpecifier eGLSLType);
 
 GLES2_MEMERROR WriteUSEShaderMemConsts(GLES2Context *gc, IMG_UINT32 ui32ProgramType);

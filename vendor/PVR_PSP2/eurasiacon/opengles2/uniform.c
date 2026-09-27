@@ -519,6 +519,7 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 	IMG_INT32 i32Loadcount;
 	IMG_UINT32 ui32Compstart, ui32Compcount;
 	IMG_INT32 i32Component;
+    IMG_BOOL bChanged;
 	IMG_BOOL bIsBool = (IMG_BOOL)(
 					   (psUniform->eTypeSpecifier == GLSLTS_BOOL)  || (psUniform->eTypeSpecifier == GLSLTS_BVEC2) ||
 	                   (psUniform->eTypeSpecifier == GLSLTS_BVEC3) || (psUniform->eTypeSpecifier == GLSLTS_BVEC4));
@@ -527,6 +528,7 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 	if(psUniform->psSymbolVP)
 	{
 		psSymbol = psUniform->psSymbolVP;
+        bChanged = IMG_FALSE;
 
 		/* Modify count if trying to load inactive elements */
 		i32Loadcount = i32Count;
@@ -553,14 +555,9 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 					/* Bools are handled as floats by the compiler.
 					   Transform them to 0.0 or 1.0 here.
 					*/
-					if(bIsBool)
-					{
-						*pfDst = (*pfSrc)? 1.0f : 0.0f;
-					}
-					else
-					{
-						*pfDst = *pfSrc;
-					}
+					{ IMG_FLOAT value = bIsBool ? (*pfSrc ? 1.0f : 0.0f) : *pfSrc;
+                        if(memcmp(pfDst, &value, sizeof(value)))
+                        { *pfDst = value; bChanged = IMG_TRUE; } }
 
 					pfSrc++;
 
@@ -580,15 +577,16 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 		ui32Compcount = psSymbol->sRegisterInfo.uCompAllocCount * (IMG_UINT32)i32Loadcount;
 
 		/* Update start and end points */
-		UpdateConstantRange(psSymbol, &psProgram->sVertex.sUniformCopyRange, ui32Compstart, ui32Compstart +  ui32Compcount);
+		if(bChanged) UpdateConstantRange(psSymbol, &psProgram->sVertex.sUniformCopyRange, ui32Compstart, ui32Compstart +  ui32Compcount);
 
-		gc->ui32DirtyState |= GLES2_DIRTYFLAG_VERTPROG_CONSTANTS;
+		if(bChanged) gc->ui32DirtyState |= GLES2_DIRTYFLAG_VERTPROG_CONSTANTS;
 	}
 
 	/* If uniform is active in fragment program */
 	if(psUniform->psSymbolFP)
 	{
 		psSymbol = psUniform->psSymbolFP;
+        bChanged = IMG_FALSE;
 
 		/* Modify count if trying to load inactive elements */
 		i32Loadcount = i32Count;
@@ -615,14 +613,9 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 					/* Bools are handled as floats by the compiler.
 					   Transform them to 0.0 or 1.0 here.
 					*/
-					if(bIsBool)
-					{
-						*pfDst = (*pfSrc)? 1.0f : 0.0f;
-					}
-					else
-					{
-						*pfDst = *pfSrc;
-					}
+					{ IMG_FLOAT value = bIsBool ? (*pfSrc ? 1.0f : 0.0f) : *pfSrc;
+                        if(memcmp(pfDst, &value, sizeof(value)))
+                        { *pfDst = value; bChanged = IMG_TRUE; } }
 
 					pfSrc++;
 					i32Component++;
@@ -641,9 +634,9 @@ static IMG_VOID SaveUniformDataFloat(GLES2Context *gc, GLES2Program *psProgram, 
 		ui32Compcount = psSymbol->sRegisterInfo.uCompAllocCount * (IMG_UINT32)i32Loadcount;
 
 		/* Update start and end points */
-		UpdateConstantRange(psSymbol, &psProgram->sFragment.sUniformCopyRange, ui32Compstart, ui32Compstart +  ui32Compcount);
+		if(bChanged) UpdateConstantRange(psSymbol, &psProgram->sFragment.sUniformCopyRange, ui32Compstart, ui32Compstart +  ui32Compcount);
 
-		gc->ui32DirtyState |= GLES2_DIRTYFLAG_FRAGPROG_CONSTANTS;
+		if(bChanged) gc->ui32DirtyState |= GLES2_DIRTYFLAG_FRAGPROG_CONSTANTS;
 	}
 }
 
@@ -667,6 +660,7 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 	IMG_INT32 i32Loadcount;
 	IMG_UINT32 ui32Compstart, ui32Compcount;
 	IMG_INT32 i32Component;
+    IMG_BOOL bChanged;
 	IMG_BOOL bIsBool = (IMG_BOOL)(
 					   (psUniform->eTypeSpecifier == GLSLTS_BOOL)  || (psUniform->eTypeSpecifier == GLSLTS_BVEC2) ||
 	                   (psUniform->eTypeSpecifier == GLSLTS_BVEC3) || (psUniform->eTypeSpecifier == GLSLTS_BVEC4));
@@ -675,6 +669,7 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 	if(psUniform->psSymbolVP)
 	{
 		psSymbol = psUniform->psSymbolVP;
+        bChanged = IMG_FALSE;
 
 		/* Modify count if trying to load inactive elements */
 		i32Loadcount = i32Count;
@@ -724,14 +719,9 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 						/* Bools are handled as floats by the compiler.
 						   Transform them to 0.0 or 1.0 here.
 						*/
-						if(bIsBool)
-						{
-							*pfDst = (*pi32Src)? 1.0f : 0.0f;
-						}
-						else
-						{
-							*pfDst = (GLfloat)(*pi32Src);
-						}
+						{ IMG_FLOAT value = bIsBool ? (*pi32Src ? 1.0f : 0.0f) : (GLfloat)(*pi32Src);
+                        if(memcmp(pfDst, &value, sizeof(value)))
+                        { *pfDst = value; bChanged = IMG_TRUE; } }
 
 						pi32Src++;
 						i32Component++;
@@ -750,17 +740,18 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 			ui32Compcount = psSymbol->sRegisterInfo.uCompAllocCount * (IMG_UINT32)i32Loadcount;
 
 			/* Update start and end points */
-			UpdateConstantRange(psSymbol, &psProgram->sVertex.sUniformCopyRange,
+			if(bChanged) UpdateConstantRange(psSymbol, &psProgram->sVertex.sUniformCopyRange,
 								ui32Compstart, ui32Compstart +  ui32Compcount);
 		}
 
-		gc->ui32DirtyState |= GLES2_DIRTYFLAG_VERTPROG_CONSTANTS;
+		if(bChanged) gc->ui32DirtyState |= GLES2_DIRTYFLAG_VERTPROG_CONSTANTS;
 	}
 
 	/* If uniform is active in fragment program */
 	if(psUniform->psSymbolFP)
 	{
 		psSymbol = psUniform->psSymbolFP;
+        bChanged = IMG_FALSE;
 
 		/* Modify count if trying to load inactive elements */
 		i32Loadcount = i32Count;
@@ -811,14 +802,9 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 						/* Bools are handled as floats by the compiler.
 						   Transform them to 0.0 or 1.0 here.
 						*/
-						if(bIsBool)
-						{
-							*pfDst = (*pi32Src)? 1.0f : 0.0f;
-						}
-						else
-						{
-							*pfDst = (GLfloat)(*pi32Src);
-						}
+						{ IMG_FLOAT value = bIsBool ? (*pi32Src ? 1.0f : 0.0f) : (GLfloat)(*pi32Src);
+                        if(memcmp(pfDst, &value, sizeof(value)))
+                        { *pfDst = value; bChanged = IMG_TRUE; } }
 
 						pi32Src++;
 						i32Component++;
@@ -837,10 +823,10 @@ static IMG_VOID SaveUniformDataInteger(GLES2Context *gc, GLES2Program *psProgram
 			ui32Compcount = psSymbol->sRegisterInfo.uCompAllocCount * (IMG_UINT32)i32Loadcount;
 
 			/* Update start and end points */
-			UpdateConstantRange(psSymbol, &psProgram->sFragment.sUniformCopyRange, 
+			if(bChanged) UpdateConstantRange(psSymbol, &psProgram->sFragment.sUniformCopyRange,
 				ui32Compstart, ui32Compstart +  ui32Compcount);
 
-			gc->ui32DirtyState |= GLES2_DIRTYFLAG_FRAGPROG_CONSTANTS;
+			if(bChanged) gc->ui32DirtyState |= GLES2_DIRTYFLAG_FRAGPROG_CONSTANTS;
 		}
 	}
 }
@@ -933,29 +919,10 @@ IMG_INTERNAL IMG_VOID GetUniformData(GLES2Context *gc, GLES2Program *psProgram, 
 ************************************************************************************/
 IMG_INTERNAL GLES2Uniform *FindUniformFromLocation(GLES2Context *gc, GLES2Program *psProgram, IMG_INT32 i32Location)
 {
-	IMG_UINT32 i;
-	GLES2Uniform *psUniform;
-
-	PVR_UNREFERENCED_PARAMETER(gc);
-
-	/* search through the uniform array and find the one with specific location */
-	for(i = 0; i < psProgram->ui32NumActiveUniforms; i++)
-	{
-		psUniform = &psProgram->psActiveUniforms[i];
-
-		if(psUniform->i32Location == -1)
-		{
-			continue;
-		}
-
-		if(i32Location >= psUniform->i32Location && 
-			i32Location < (psUniform->i32Location + (IMG_INT32)psUniform->ui32ActiveArraySize ) )
-		{
-			return psUniform;
-		}
-	}
-
-	return IMG_NULL;
+    PVR_UNREFERENCED_PARAMETER(gc);
+    if(i32Location < 0 || (IMG_UINT32)i32Location >= psProgram->ui32UniformLocationCount)
+        return IMG_NULL;
+    return psProgram->ppsUniformLocations[i32Location];
 }
 
 
@@ -1096,61 +1063,42 @@ GL_APICALL int  GL_APIENTRY glGetUniformLocation(GLuint program, const char *nam
 		goto StopTimeAndReturnMinusOne;
 	}
 
-	/* gl prefix reserved */
-	if(strlen(name) >= 3)
-	{
-		if ((name[0] == 'g') &&
-			(name[1] == 'l') &&
-			(name[2] == '_'))
-		{
-			goto StopTimeAndReturnMinusOne;
-		}
-	}
-
-	ui32Length = strlen(name);
-
-	if(name[ui32Length-1] == ']')
-	{
-		ui32LeftBracket = ui32Length-3;
-
-		while(name[ui32LeftBracket] != '[' && (ui32LeftBracket > 0))
-		{
-			ui32LeftBracket--;
-		}
-
-		bArrayElement = IMG_TRUE;
-
-		i32Index = atoi(name + ui32LeftBracket + 1U);
-	}
-	
-	for(i = 0; i < psProgram->ui32NumActiveUserUniforms; i++)
-	{
-		psUniform = psProgram->ppsActiveUserUniforms[i];
-
-		if(bArrayElement)
-		{
-			if(!memcmp(name, psUniform->pszName, ui32LeftBracket))
-			{
-				if((IMG_UINT32)i32Index <= psUniform->ui32ActiveArraySize)
-				{
-					GLES2_TIME_STOP(GLES2_TIMES_glGetUniformLocation);
-					return psUniform->i32Location + i32Index;
-				}
-				else
-				{
-					goto StopTimeAndReturnMinusOne;
-				}
-			}
-		}
-		else
-		{
-			if(!strcmp(name, psUniform->pszName))
-			{
-				GLES2_TIME_STOP(GLES2_TIMES_glGetUniformLocation);
-				return psUniform->i32Location;
-			}
-		}
-	}
+    if(!name || !name[0]) goto StopTimeAndReturnMinusOne;
+    ui32Length = strlen(name);
+    if(ui32Length >= 3 && !memcmp(name, "gl_", 3)) goto StopTimeAndReturnMinusOne;
+    i32Index = 0;
+    if(name[ui32Length - 1] == ']')
+    {
+        IMG_UINT32 pos = ui32Length - 1, value = 0;
+        while(pos && name[pos] != '[') --pos;
+        if(!pos || pos + 2 >= ui32Length) goto StopTimeAndReturnMinusOne;
+        ui32LeftBracket = pos;
+        for(++pos; pos < ui32Length - 1; ++pos)
+        {
+            IMG_UINT32 digit = (IMG_UINT8)name[pos] - '0';
+            if(digit > 9 || value > (0x7fffffffU - digit) / 10U)
+                goto StopTimeAndReturnMinusOne;
+            value = value * 10U + digit;
+        }
+        i32Index = (IMG_INT32)value;
+        ui32Length = ui32LeftBracket;
+        bArrayElement = IMG_TRUE;
+    }
+    if(!psProgram->ppsUniformNames) goto StopTimeAndReturnMinusOne;
+    i = UniformNameHash(name, ui32Length) & psProgram->ui32UniformNameMask;
+    while((psUniform = psProgram->ppsUniformNames[i]) != IMG_NULL)
+    {
+        if(strlen(psUniform->pszName) == ui32Length &&
+           !memcmp(name, psUniform->pszName, ui32Length))
+        {
+            if(bArrayElement && (!psUniform->ui32DeclaredArraySize ||
+                (IMG_UINT32)i32Index >= psUniform->ui32ActiveArraySize))
+                goto StopTimeAndReturnMinusOne;
+            GLES2_TIME_STOP(GLES2_TIMES_glGetUniformLocation);
+            return psUniform->i32Location + i32Index;
+        }
+        i = (i + 1) & psProgram->ui32UniformNameMask;
+    }
 
 StopTimeAndReturnMinusOne:
 

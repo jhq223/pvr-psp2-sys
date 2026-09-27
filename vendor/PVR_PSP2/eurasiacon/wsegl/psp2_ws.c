@@ -87,6 +87,9 @@ static WSEGLError WSEGL_CreateWindowDrawable(WSEGLDisplayHandle hDisplay,
 	IMG_BOOL bIsAllowedHd = IMG_FALSE;
 	DISPLAY_SURF_ATTRIBUTES sDispSurfAttrib;
 	PVRSRV_ERROR eSrvError;
+    IMG_UINT32 mapped = 0;
+    if(!hNativeWindow || !phDrawable || !eRotationAngle) return WSEGL_BAD_NATIVE_WINDOW;
+    *phDrawable = IMG_NULL;
 
 	sceDisplayGetMaximumFrameBufResolution(&ui32DispWith, &ui32DispHeight);
 
@@ -153,7 +156,9 @@ static WSEGLError WSEGL_CreateWindowDrawable(WSEGLDisplayHandle hDisplay,
 	else
 		ui32BufNum = hNativeWindow->numFlipBuffers;
 
-	eSrvError = PVRSRVCreateDCSwapChain((IMG_HANDLE)psConnection,
+    if(!ui32BufNum) return WSEGL_BAD_NATIVE_WINDOW;
+
+    eSrvError = PVRSRVCreateDCSwapChain((IMG_HANDLE)psConnection,
 		0,
 		&sDispSurfAttrib,
 		&sDispSurfAttrib,
@@ -174,7 +179,7 @@ static WSEGLError WSEGL_CreateWindowDrawable(WSEGLDisplayHandle hDisplay,
 		hNativeWindow->ahSwapChainBuffers);
 	if (eSrvError != PVRSRV_OK)
 	{
-		return WSEGL_CANNOT_INITIALISE;
+		goto failed;
 	}
 
 	for (IMG_INT32 i = 0; i < ui32BufNum; i++)
@@ -185,22 +190,35 @@ static WSEGLError WSEGL_CreateWindowDrawable(WSEGLDisplayHandle hDisplay,
 			&hNativeWindow->apsSwapBufferMemInfo[i]);
 		if (eSrvError != PVRSRV_OK)
 		{
-			return WSEGL_CANNOT_INITIALISE;
+			goto failed;
 		}
+		++mapped;
 	}
 
-	PVRSRVSwapToDCBuffer(psConnection,
+	eSrvError = PVRSRVSwapToDCBuffer(psConnection,
 		hNativeWindow->ahSwapChainBuffers[0],
 		0,
 		IMG_NULL,
 		hNativeWindow->swapInterval,
 		0);
 
-	hNativeWindow->currBufIdx = 1;
+    if(eSrvError != PVRSRV_OK) goto failed;
+    hNativeWindow->numFlipBuffers = ui32BufNum;
+    hNativeWindow->currBufIdx = 1 % ui32BufNum;
 	*phDrawable = (WSEGLDrawableHandle)hNativeWindow;
 	*eRotationAngle = WSEGL_ROTATE_0;
 
-	return WSEGL_SUCCESS;
+    return WSEGL_SUCCESS;
+failed:
+    while(mapped)
+    {
+        --mapped;
+        PVRSRVUnmapDeviceClassMemory(hNativeWindow->psDevData, hNativeWindow->apsSwapBufferMemInfo[mapped]);
+        hNativeWindow->apsSwapBufferMemInfo[mapped] = IMG_NULL;
+    }
+    PVRSRVDestroyDCSwapChain((IMG_HANDLE)psConnection, hNativeWindow->swapChain);
+    hNativeWindow->swapChain = 0;
+    return WSEGL_CANNOT_INITIALISE;
 }
 
 static WSEGLError WSEGL_CreatePixmapDrawable(WSEGLDisplayHandle hDisplay,
@@ -263,6 +281,7 @@ static WSEGLError WSEGL_DeleteDrawable(WSEGLDrawableHandle hDrawable)
 	{
 	case PSP2_DRAWABLE_TYPE_WINDOW:
 		window = (NativeWindowType)hDrawable;
+        PVRSRVSwapToDCSystem((IMG_HANDLE)window->psConnection, window->swapChain);
 
 		for (IMG_INT32 i = 0; i < window->numFlipBuffers; i++)
 		{

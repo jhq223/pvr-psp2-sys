@@ -495,6 +495,10 @@ struct GLES2ProgramRec
 	IMG_UINT32 ui32NumActiveUserUniforms;
 	
 	GLES2Uniform **ppsActiveUserUniforms;
+    GLES2Uniform **ppsUniformLocations;
+    IMG_UINT32 ui32UniformLocationCount;
+    GLES2Uniform **ppsUniformNames;
+    IMG_UINT32 ui32UniformNameMask;
 
 	/* A list of builtin uniforms, one builtin ID has one entry, even for struct type */
 	GLES2BuiltInUniform *psBuiltInUniforms;
