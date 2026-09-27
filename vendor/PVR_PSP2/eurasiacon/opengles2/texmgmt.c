@@ -262,7 +262,7 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 	IMG_UINT32       ui32Lod, ui32Face;
 	GLES2MipMapLevel *psLevel;
 
-    if(SWTextureBusy(gc, psTex)) return;
+    if(psTex->ui32ValidationPins || SWTextureBusy(gc, psTex)) return;
 
 	GLES_ASSERT(psResource);
 
@@ -3331,7 +3331,7 @@ IMG_INTERNAL IMG_VOID SetupTextureState(GLES2Context *gc)
 	/* A later sampler allocation can reclaim idle storage. Keep every input
 	 * alive until all TAG words have been built, including inputs used only by
 	 * the other shader stage. GPU attachments are installed after validation.
-	 * The KRM waiter count also prevents reclaim while its lock is dropped. */
+	 * Keep this pin on the texture: consistency checks can reset sResource. */
 	PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
 	for(j = 0; j < 2; ++j)
 	{
@@ -3349,7 +3349,7 @@ IMG_INTERNAL IMG_VOID SetupTextureState(GLES2Context *gc)
 				GLES_ASSERT(psSampler->ui8SamplerTypeIndex < GLES2_TEXTURE_TARGET_MAX);
 				GLES2Texture *psTex = gc->sTexture.apsBoundTexture[unit][psSampler->ui8SamplerTypeIndex];
 				GLES_ASSERT(psTex);
-				++psTex->sResource.ui32Waiters;
+				++psTex->ui32ValidationPins;
 				apsPinned[ui32Pinned++] = psTex;
 			}
 		}
@@ -3725,8 +3725,8 @@ IMG_INTERNAL IMG_VOID SetupTextureState(GLES2Context *gc)
 	while(ui32Pinned)
 	{
 		GLES2Texture *psTex = apsPinned[--ui32Pinned];
-		GLES_ASSERT(psTex->sResource.ui32Waiters);
-		--psTex->sResource.ui32Waiters;
+		GLES_ASSERT(psTex->ui32ValidationPins);
+		--psTex->ui32ValidationPins;
 	}
 	PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
 }

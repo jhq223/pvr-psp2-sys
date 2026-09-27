@@ -66,6 +66,7 @@ typedef struct {
 } GLES2TextureParamState;
 typedef struct {
     KRMResource sResource;
+    unsigned ui32ValidationPins;
     PVRSRV_CLIENT_MEM_INFO *psMemInfo;
     GLES2MipMapLevel *psMipLevel;
     const GLES2TextureFormat *psFormat;
@@ -93,7 +94,7 @@ typedef struct {
 } GLES2Context;
 static GLES2TextureFormat TexFormatABGR8888 = {4,1};
 static GLES2Texture *victim;
-static int pressure, freed, lock_depth, error, fail_allocation;
+static int pressure, freed, lock_depth, error, fail_allocation, reset_resource;
 static void PVRSRVLockMutex(int lock) { (void)lock; assert(!lock_depth++); }
 static void PVRSRVUnlockMutex(int lock) { (void)lock; assert(lock_depth-- == 1); }
 static int SWTextureBusy(GLES2Context *gc, GLES2Texture *t) { (void)gc; (void)t; return 0; }
@@ -104,7 +105,12 @@ static void *GLES2MallocHeapUNC(GLES2Context *gc,size_t n) { (void)gc; return ma
 static void ReadBackTextureData(GLES2Context *gc,GLES2Texture *t,unsigned f,unsigned l,void *p) { (void)gc;(void)t;(void)f;(void)l; memset(p,0,4); }
 static void GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc,PVRSRV_CLIENT_MEM_INFO *m) { (void)gc; ++freed; free(m); }
 static void SetError(GLES2Context *gc,int e) { (void)gc; error=e; }
-static unsigned IsTextureConsistent(GLES2Context *gc,GLES2Texture *t,unsigned layout,int loop) { (void)gc;(void)t;(void)layout;(void)loop; return GLES2_TEX_CONSISTENT; }
+static unsigned IsTextureConsistent(GLES2Context *gc,GLES2Texture *t,unsigned layout,int loop) {
+    (void)gc;(void)layout;(void)loop;
+    /* UnloadInconsistentTexture can unlink and reset its KRM resource. */
+    if(reset_resource) memset(&t->sResource,0,sizeof(t->sResource));
+    return GLES2_TEX_CONSISTENT;
+}
 static int TextureMakeResident(GLES2Context *gc,GLES2Texture *t);
 #include "texture_validation_functions.inc"
 static int TextureMakeResident(GLES2Context *gc,GLES2Texture *t) {
@@ -122,7 +128,7 @@ static void dispose(GLES2Texture *t) {
     free(t->psMemInfo);
     if(t->psMipLevel->pui8Buffer != GLES2_LOADED_LEVEL) free(t->psMipLevel->pui8Buffer);
 }
-static void check_validation(unsigned first_stage, unsigned second_stage, int duplicate, int fail) {
+static void check_validation(unsigned first_stage, unsigned second_stage, int duplicate, int fail, int reset) {
     GLES2TextureManager manager={0}; Shared shared={&manager,0}; Program program={0}; GLES2Context gc={0};
     PVRSRV_CLIENT_MEM_INFO dummy={0};
     GLES2MipMapLevel level[2]={0}; GLES2Texture tex[2]={0};
@@ -143,13 +149,14 @@ static void check_validation(unsigned first_stage, unsigned second_stage, int du
     }
     tex[0].psMemInfo=calloc(1,sizeof(*tex[0].psMemInfo));assert(tex[0].psMemInfo);
     tex[0].psMemInfo->sDevVAddr.uiAddr=0x634c0000; tex[0].sState.aui32StateWord2[0]=0x634c0000; tex[0].bResidence=1;
-    victim=&tex[0]; pressure=1; freed=error=0; fail_allocation=fail;
+    victim=&tex[0]; pressure=1; freed=error=0; fail_allocation=fail; reset_resource=reset;
     SetupTextureState(&gc);
     /* Allocating sampler 1 must not evict the address just emitted for sampler 0. */
     assert(tex[0].psMemInfo && tex[0].bResidence && !freed);
     GLES2CompiledTextureState *state=first_stage ? &gc.sPrim.sFragmentTextureState : &gc.sPrim.sVertexTextureState;
     assert(state->aui32TAGControlWord[0][2] == tex[0].psMemInfo->sDevVAddr.uiAddr);
     assert(!tex[0].sResource.ui32Waiters && !tex[1].sResource.ui32Waiters && !lock_depth);
+    assert(!tex[0].ui32ValidationPins && !tex[1].ui32ValidationPins);
     assert(error == (fail ? GL_OUT_OF_MEMORY : 0));
     /* After validation, unused storage remains reclaimable and invalidates cached state. */
     gc.ui32DirtyState=0;
@@ -170,6 +177,7 @@ int main(void) {
     for(unsigned a=0;a<2;++a)
         for(unsigned b=0;b<2;++b)
             for(int duplicate=0;duplicate<2;++duplicate)
-                for(int fail=0;fail<2;++fail) check_validation(a,b,duplicate,fail);
-    puts("texture validation: 16 cases passed (both stages, repeated inputs, OOM, reclaim invalidation)");
+                for(int fail=0;fail<2;++fail)
+                    for(int reset=0;reset<2;++reset) check_validation(a,b,duplicate,fail,reset);
+    puts("texture validation: 32 cases passed (both stages, repeated inputs, OOM, resource reset, reclaim invalidation)");
 }

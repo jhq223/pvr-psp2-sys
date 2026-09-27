@@ -184,6 +184,8 @@ typedef struct GLES2TextureRec
 
 	/* Textures are frame resources */
 	KRMResource       		 sResource;
+	/* Validation can rebuild/reset sResource while the texture stays bound. */
+	IMG_UINT32               ui32ValidationPins;
 
 	/* State for this texture object */
 	GLES2TextureParamState   sState;
