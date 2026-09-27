@@ -19,6 +19,8 @@
 
 #include "context.h"
 
+static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2VertexArrayObject *psVAO);
+
 
 /***********************************************************************************
  Function Name      : CreateVertexArrayObjectState
@@ -73,10 +75,10 @@ IMG_INTERNAL IMG_VOID ReclaimVAOMemKRM(IMG_VOID *pvContext, KRMResource *psResou
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyVAOGhostKRM(IMG_VOID *pvContext, KRMResource *psResource)
 {
-	PVR_UNREFERENCED_PARAMETER(pvContext);
-	PVR_UNREFERENCED_PARAMETER(psResource);
-
-	PVR_DPF((PVR_DBG_WARNING, "DestroyVAOGhostKRM: Called"));
+	GLES2Context *gc = (GLES2Context *)pvContext;
+	GLES2VertexArrayObject *vao = (GLES2VertexArrayObject *)((IMG_UINT8 *)psResource - offsetof(GLES2VertexArrayObject, sResource));
+	FreeVertexArrayObjectInternalPointers(gc, vao);
+	GLES2Free(IMG_NULL, vao);
 }	
 
 /***********************************************************************************
@@ -130,7 +132,7 @@ static IMG_BOOL WaitUntilVAONotUsed(GLES2Context *gc, GLES2VertexArrayObject *ps
 	/*
 	** Case 3
 	*/
-	if(gc->psRenderSurface->bPrimitivesSinceLastTA)
+	if(gc->psRenderSurface && gc->psRenderSurface->bPrimitivesSinceLastTA)
 	{
 		/* Is this buffer object attached to the current kick? */
 		if(KRM_IsResourceInUse(&gc->sVAOKRM,
@@ -170,7 +172,8 @@ static IMG_BOOL WaitUntilVAONotUsed(GLES2Context *gc, GLES2VertexArrayObject *ps
 	/*
 	** Case 4
 	*/
-	return KRM_WaitUntilResourceIsNotNeeded(&gc->sVAOKRM, &psVAO->sResource, KRM_DEFAULT_WAIT_RETRIES);
+	return KRM_WaitUntilResourceIsNotNeeded(&gc->sVAOKRM, &psVAO->sResource, KRM_DEFAULT_WAIT_RETRIES) &&
+	       !KRM_IsResourceNeeded(&gc->sVAOKRM, &psVAO->sResource);
 
 }
 
@@ -190,6 +193,8 @@ static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2Ver
 	GLES2NamesArray *psNamesArray = gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_BUFOBJ];	
   
 	GLES_ASSERT(psVAO);
+	/* Callers wait before teardown; the ghost callback runs after completion. */
+	GLES_ASSERT(!KRM_IsResourceNeeded(&gc->sVAOKRM, &psVAO->sResource));
 	
 
 	/* Unbind any buffer object from VAO's attribute pointer */
@@ -239,10 +244,6 @@ static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2Ver
 	/* Free VAO's device memory */
     if (psVAO->psMemInfo)
 	{
-	    if (!WaitUntilVAONotUsed(gc, psVAO))
-		{
-			PVR_DPF((PVR_DBG_ERROR,"FreeVertexArrayObjectInternalPointers: Problem freeing VAO's MemInfo"));
-		}
 		GLES2FREEDEVICEMEM(gc->ps3DDevData, psVAO->psMemInfo);
 
 		psVAO->psMemInfo = IMG_NULL;
@@ -316,6 +317,11 @@ static IMG_VOID FreeVertexArrayObject(GLES2Context *gc, GLES2VertexArrayObject *
 	GLES_ASSERT(bIsShutdown || (psVAO->sNamedItem.ui32RefCount == 0));
 
 	/* Free VAO's all the internal pointer data */
+    if(!WaitUntilVAONotUsed(gc, psVAO))
+    {
+        KRM_RetireResource(&gc->sVAOKRM, &psVAO->sResource);
+        return;
+    }
     FreeVertexArrayObjectInternalPointers(gc, psVAO);
 
 	/* Remove VAO's KRM resource */
@@ -407,6 +413,11 @@ GL_API_EXT void GL_APIENTRY glBindVertexArrayOES(GLuint vertexarray)
 	PVR_DPF((PVR_DBG_CALLTRACE,"glBindVertexArrayOES"));
 
 	GLES2_TIME_START(GLES2_TIMES_glBindVertexArrayOES);
+	if(gc->sVAOMachine.psActiveVAO->sNamedItem.ui32Name == vertexarray)
+	{
+		GLES2_TIME_STOP(GLES2_TIMES_glBindVertexArrayOES);
+		return;
+	}
 
 
 	GLES_ASSERT(IMG_NULL != gc->apsNamesArray[GLES2_NAMETYPE_VERARROBJ - GLES2_MAX_SHAREABLE_NAMETYPE]);
@@ -547,10 +558,6 @@ GL_API_EXT void GL_APIENTRY glDeleteVertexArraysOES(GLsizei n, const GLuint *ver
 		{
 			psVAO = gc->sVAOMachine.psActiveVAO;
 
-			/* Free VAO's all the internal pointer data and
-			decrease the attached buffer objects' RefCount since they're unbound from the VAO. */
-			FreeVertexArrayObjectInternalPointers(gc, psVAO);
-
 			/* Unbind the currently bound VAO from the context. */
 			if (psVAO && (psVAO->sNamedItem.ui32Name == vertexarrays[i]))
 			{
@@ -559,6 +566,7 @@ GL_API_EXT void GL_APIENTRY glDeleteVertexArraysOES(GLsizei n, const GLuint *ver
 
 				/* Reset the current VAO to the default VAO */
 				gc->sVAOMachine.psActiveVAO = &(gc->sVAOMachine.sDefaultVAO);
+				gc->sVAOMachine.psActiveVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_BINDING;
 			}
 		}
 	}

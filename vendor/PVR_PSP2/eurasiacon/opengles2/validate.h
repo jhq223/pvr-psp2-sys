@@ -304,7 +304,7 @@ GLES2_MEMERROR SendClearPrims(GLES2Context *gc,
 
 GLES2_MEMERROR SendDepthBiasPrims(GLES2Context *gc);
 
-IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc);
+IMG_BOOL AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc);
 
 
 #endif /* _VALIDATE_ */

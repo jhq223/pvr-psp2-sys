@@ -136,6 +136,9 @@ IMG_BOOL InsertNamedItem(GLES2NamesArray *psNamesArray, GLES2NamedItem* psNamedI
 /* NOTE: this function was previously named LockNamedItem */
 GLES2NamedItem* NamedItemAddRef(GLES2NamesArray *psNamesArray, IMG_UINT32 ui32Name);
 
+/* Borrowed lookup. The caller must serialize object use with shared-context deletion. */
+GLES2NamedItem* NamedItemLookup(GLES2NamesArray *psNamesArray, IMG_UINT32 ui32Name);
+
 
 /* Decreases the refcount of an item. The object is deleted when this function is 
  * called one more time than NamedItemAddRef had been called before.
@@ -159,4 +162,3 @@ IMG_VOID NamedItemDelRefByName(GLES2Context *gc, GLES2NamesArray *psNamesArray,
 /******************************************************************************
  End of file (names.h)
 ******************************************************************************/
-

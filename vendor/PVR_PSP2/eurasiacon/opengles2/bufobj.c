@@ -293,11 +293,10 @@ static IMG_VOID FreeBufferObject(GLES2Context *gc, GLES2BufferObject *psBufObj, 
             return;
 		}
 
-		GLES2FREEDEVICEMEM_HEAP(gc, psBufObj->psMemInfo);
-
 #if defined(DEBUG) || defined(TIMING)
 		gc->ui32VBOMemCurrent -= psBufObj->psMemInfo->uAllocSize;
 #endif /* defined(DEBUG) || defined(TIMING) */
+		GLES2FREEDEVICEMEM_HEAP(gc, psBufObj->psMemInfo);
 	}
 
 	KRM_RemoveResourceFromAllLists(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource);
@@ -926,12 +925,19 @@ GL_APICALL void GL_APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsi
 		return;
 	}
 
-	if((IMG_UINT32)(offset + size) > psBufObj->ui32BufferSize)
+	if((IMG_UINT32)offset > psBufObj->ui32BufferSize ||
+	   (IMG_UINT32)size > psBufObj->ui32BufferSize - (IMG_UINT32)offset)
 	{
 		SetError(gc, GL_INVALID_VALUE);
 
 		GLES2_TIME_STOP(GLES2_TIMES_glBufferSubData);
 
+		return;
+	}
+
+	if(size == 0)
+	{
+		GLES2_TIME_STOP(GLES2_TIMES_glBufferSubData);
 		return;
 	}
 
@@ -1043,7 +1049,7 @@ GL_API_EXT void * GL_APIENTRY glMapBufferOES(GLenum target, GLenum access)
 		return IMG_NULL;
 	}
 
-	if(psBufObj->psMemInfo->pvLinAddr)
+	if(psBufObj->psMemInfo && psBufObj->psMemInfo->pvLinAddr)
 	{
 		if(!WaitUntilBufObjNotUsed(gc, psBufObj))
 		{
@@ -1135,4 +1141,3 @@ GL_API_EXT GLboolean GL_APIENTRY glUnmapBufferOES(GLenum target)
 /******************************************************************************
  End of file (bufobj.c)
 ******************************************************************************/
-

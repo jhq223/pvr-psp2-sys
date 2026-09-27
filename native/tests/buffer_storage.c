@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#define TIMING 1
 typedef unsigned IMG_UINT32;
 typedef uintptr_t IMG_UINTPTR_T;
 typedef int IMG_BOOL;
@@ -22,7 +23,7 @@ typedef struct { unsigned needed; } KRMResource;
 typedef struct { unsigned uAllocSize; } PVRSRV_CLIENT_MEM_INFO;
 typedef struct { struct { unsigned ui32RefCount; } sNamedItem; KRMResource sResource; PVRSRV_CLIENT_MEM_INFO *psMemInfo; unsigned ui32AllocAlign; } GLES2BufferObject;
 typedef struct { int sBufferObjectKRM; unsigned ui32RefCount; } Shared;
-typedef struct { Shared *psSharedState; } GLES2Context;
+typedef struct { Shared *psSharedState; unsigned ui32VBOMemCurrent; } GLES2Context;
 static int fail_host, fail_device, fail_ghost, wait_ok = 1, live_device;
 static KRMResource *retired;
 static void *GLES2Calloc(GLES2Context *gc, size_t size) { return fail_host ? NULL : calloc(1, size); }
@@ -46,7 +47,7 @@ static GLES2BufferObject *buffer(GLES2Context *gc) {
     assert(!GLES2ALLOCDEVICEMEM_HEAP(gc, 0, 64, 16, &b->psMemInfo)); b->ui32AllocAlign = 16; b->sResource.needed = 1; return b;
 }
 int main(void) {
-    Shared shared = {0, 1}; GLES2Context gc = {&shared}; GLES2BufferObject *b = buffer(&gc);
+    Shared shared = {0, 1}; GLES2Context gc = {&shared, 0}; GLES2BufferObject *b = buffer(&gc);
     PVRSRV_CLIENT_MEM_INFO *old = b->psMemInfo;
     fail_host = 1; assert(!ReplaceBufferStorage(&gc, b, 128, 32)); fail_host = 0;
     fail_device = 2; assert(!ReplaceBufferStorage(&gc, b, 128, 32));

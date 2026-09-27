@@ -570,20 +570,14 @@ IMG_INTERNAL GLES2Program *GetNamedProgram(GLES2Context *gc, GLuint program)
 
 	psNamesArray = gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_PROGRAM];
 
-	/* Retrieve the program object from the psNamesArray structure. */
-	/* Improvement: instead of increasing the refcount just to decrease it immediately, we should have
-	          one more function for name arrays that returns whether the object exists without increasing the
-	          refcount. That function would also be used in glIsShader, glIsTexture, etc.
-	*/
-	psProgram = (GLES2Program *) NamedItemAddRef(psNamesArray, program);
+	/* The API caller serializes shared object mutation and deletion. */
+	psProgram = (GLES2Program *) NamedItemLookup(psNamesArray, program);
 
 	if(psProgram == IMG_NULL)
 	{
 		SetError(gc, GL_INVALID_VALUE);
 		return IMG_NULL;
 	}
-
-	NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psProgram);
 
 	if(psProgram->ui32Type != GLES2_SHADERTYPE_PROGRAM)
 	{
@@ -611,15 +605,13 @@ IMG_INTERNAL GLES2Shader *GetNamedShader(GLES2Context *gc, GLuint shader)
 	psNamesArray = gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_PROGRAM];
 
 	/* Retrieve the shader object from the psNamesArray structure. */
-	psShader = (GLES2Shader *) NamedItemAddRef(psNamesArray, shader);
+	psShader = (GLES2Shader *) NamedItemLookup(psNamesArray, shader);
 
 	if(psShader == IMG_NULL)
 	{
 		SetError(gc, GL_INVALID_VALUE);
 		return IMG_NULL;
 	}
-
-	NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psShader);
 
 	if(psShader->ui32Type == GLES2_SHADERTYPE_PROGRAM)
 	{
@@ -880,6 +872,7 @@ GL_APICALL void GL_APIENTRY glBindAttribLocation(GLuint program, GLuint index, c
 
 	if(!psBinding->pszName)
 	{
+		GLES2Free(IMG_NULL, psBinding);
 		SetError(gc, GL_OUT_OF_MEMORY);
 		goto StopTimeAndReturn;
 	}
@@ -1217,7 +1210,7 @@ GL_APICALL void GL_APIENTRY glGetActiveAttrib(GLuint program, GLuint index, GLsi
 
 	if(length)
 	{
-		*length = (GLsizei)strlen(name);
+		*length = bufsize > 0 ? (GLsizei)strlen(name) : 0;
 	}
 
 	*size = psAttrib->psSymbolVP->iActiveArraySize;
@@ -4090,14 +4083,13 @@ GL_APICALL void GL_APIENTRY glShaderSource(GLuint shader, GLsizei count, const c
 	/* Work out the total string length */
 	for(i = 0; i < count; i++)
 	{
-		if((length) && (length[i] > 0))
+		size_t partLength = length && length[i] >= 0 ? (size_t)length[i] : strlen(string[i]);
+		if(partLength > 0xFFFFFFFFU - ui32SourceLength)
 		{
-			ui32SourceLength += (IMG_UINT32)length[i];
+			SetError(gc, GL_OUT_OF_MEMORY);
+			goto StopTimeAndReturn;
 		}
-		else
-		{
-			ui32SourceLength += strlen(string[i]);
-		}
+		ui32SourceLength += (IMG_UINT32)partLength;
 	}
 
 	pszNewSource = GLES2Realloc(gc, psShader->pszSource, ui32SourceLength);
@@ -4114,9 +4106,9 @@ GL_APICALL void GL_APIENTRY glShaderSource(GLuint shader, GLsizei count, const c
 
 	for(i = 0; i < count; i++)
 	{
-		if((length) && (length[i] > 0))
+		if((length) && (length[i] >= 0))
 		{
-			GLES2MemCopy(pszString, (const IMG_VOID *)string[i], (IMG_UINT32)length[i]);
+			if(length[i]) GLES2MemCopy(pszString, (const IMG_VOID *)string[i], (IMG_UINT32)length[i]);
 			pszString += length[i];
 		}
 		else
@@ -4131,7 +4123,6 @@ GL_APICALL void GL_APIENTRY glShaderSource(GLuint shader, GLsizei count, const c
 
 	/* Initialise other variables */
 	psShader->bSuccessfulCompile = IMG_FALSE;
-	psShader->bDeleting = IMG_FALSE;
 	GLES2Free(IMG_NULL, psShader->pszInfoLog);
 	psShader->pszInfoLog = IMG_NULL;
 
@@ -5061,4 +5052,3 @@ IMG_INTERNAL IMG_VOID DestroyUSEShaderVariantGhost(GLES2Context *gc, GLES2USESha
 /******************************************************************************
  End of file (shader.c)
 ******************************************************************************/
-

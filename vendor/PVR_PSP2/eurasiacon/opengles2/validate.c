@@ -1309,7 +1309,7 @@ static GLES2_MEMERROR WritePDSPixelShaderProgram(GLES2Context *gc, IMG_BOOL *pbC
 			if(!pui32HashCompare)
 			{
 				PVR_DPF((PVR_DBG_ERROR,"WritePDSPixelShaderProgram: Failed to allocate hash compare structure"));
-				
+				UCH_CodeHeapFree(psPDSVariant->psCodeBlock);
 				GLES2Free(IMG_NULL, psPDSVariant);
 				return GLES2_HOST_MEM_ERROR;
 			}
@@ -1317,10 +1317,16 @@ static GLES2_MEMERROR WritePDSPixelShaderProgram(GLES2Context *gc, IMG_BOOL *pbC
 			GLES2MemCopy(pui32HashCompare, gc->sProgram.aui32HashCompare, ui32HashCompareSizeInDWords*sizeof(IMG_UINT32));
 
 			/* Insert PDS variant in hash table */
-			HashTableInsert(gc, 
+			if(!HashTableInsert(gc,
 							&gc->sProgram.sPDSFragmentVariantHashTable, tPDSVariantHash, 
 							pui32HashCompare, ui32HashCompareSizeInDWords, 
-							(IMG_UINT32)psPDSVariant);
+							(IMG_UINT32)psPDSVariant))
+			{
+				GLES2Free(IMG_NULL, pui32HashCompare);
+				UCH_CodeHeapFree(psPDSVariant->psCodeBlock);
+				GLES2Free(IMG_NULL, psPDSVariant);
+				return GLES2_HOST_MEM_ERROR;
+			}
 
 			/* Add to USE variant list */
 			psPDSVariant->psNext = psFragmentVariant->psPDSVariant;
@@ -4288,7 +4294,8 @@ IMG_INTERNAL GLES2_MEMERROR GLES2EmitState(GLES2Context *gc, IMG_UINT32 ePrimiti
 	}
 
 	/* Attach all used VAOs and VBOs to the current kick */
-	AttachAllUsedBOsAndVAOToCurrentKick(gc);
+	if(!AttachAllUsedBOsAndVAOToCurrentKick(gc))
+    { GLES2_TIME_STOP(GLES2_TIMER_STATE_EMIT_TIME); return GLES2_HOST_MEM_ERROR; }
 
 	/* Change a point to a sprite */
 	if((ePrimitiveType == GLES2_PRIMTYPE_POINT) && 
@@ -4619,4 +4626,3 @@ IMG_INTERNAL GLES2_MEMERROR GLES2EmitState(GLES2Context *gc, IMG_UINT32 ePrimiti
 /******************************************************************************
  End of file (validate.c)
 ******************************************************************************/
-

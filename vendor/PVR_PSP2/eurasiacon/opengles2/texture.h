@@ -153,12 +153,34 @@ typedef struct GLES2TextureUnitStateRec
 
 
 /*
-** Per Texture Object state.
+** Storage retained until GPU use completes.
 */
+typedef struct GLES2GhostRec
+{
+	struct GLES2TextureRec *psOwner;
+	/* Ghosts are frame resources */
+	KRMResource sResource;
+
+	PVRSRV_CLIENT_MEM_INFO *psMemInfo;
+	IMG_UINT32             ui32Size;
+#if defined(GLES2_EXTENSION_EGL_IMAGE)
+	IMG_VOID *hImage;
+#endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
+#if defined(GLES2_EXTENSION_TEXTURE_STREAM)
+    IMG_VOID *hBufferDevice;
+#endif /* defined(GLES2_EXTENSION_TEXTURE_STREAM) */
+#if defined PDUMP
+	/* Whether this ghost has been dumped or not */
+	IMG_BOOL bDumped;
+#endif
+
+} GLES2Ghost;
+
 typedef struct GLES2TextureRec
 {
 	/* This struct must be the first variable */
 	GLES2NamedItem           sNamedItem;
+	GLES2Ghost sDeletionGhost;
 
 	/* Textures are frame resources */
 	KRMResource       		 sResource;
@@ -231,30 +253,6 @@ typedef struct GLES2TextureRec
 
 
 } GLES2Texture;
-
-
-/*
- * Ghosted texture.
- */
-typedef struct GLES2GhostRec
-{
-	/* Ghosts are frame resources */
-	KRMResource sResource;
-
-	PVRSRV_CLIENT_MEM_INFO *psMemInfo;
-	IMG_UINT32             ui32Size;
-#if defined(GLES2_EXTENSION_EGL_IMAGE)
-	IMG_VOID *hImage;
-#endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
-#if defined(GLES2_EXTENSION_TEXTURE_STREAM)
-    IMG_VOID *hBufferDevice;
-#endif /* defined(GLES2_EXTENSION_TEXTURE_STREAM) */
-#if defined PDUMP
-	/* Whether this ghost has been dumped or not */
-	IMG_BOOL bDumped;
-#endif
-
-} GLES2Ghost;
 
 
 /*
@@ -391,7 +389,7 @@ IMG_VOID PDumpTexture(GLES2Context *gc, GLES2Texture *psTex);
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
 IMG_BOOL TextureCreateImageLevel(GLES2Context *gc, GLES2Texture *psTex);
-IMG_VOID ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *psTex);
+IMG_BOOL ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *psTex);
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
 IMG_BOOL CreateTextureMemory(GLES2Context *gc, GLES2Texture *psTex);

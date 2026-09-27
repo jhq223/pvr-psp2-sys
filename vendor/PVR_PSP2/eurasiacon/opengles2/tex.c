@@ -3444,7 +3444,7 @@ bad_op:
 	{
 		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 		{
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex)) return;
 		}
 		else
 		{
@@ -3457,7 +3457,7 @@ bad_op:
 	}
 	else if(psTex->psEGLImageTarget)
 	{
-		ReleaseImageFromTexture(gc, psTex);
+		if(!ReleaseImageFromTexture(gc, psTex)) return;
 	}
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
@@ -4224,14 +4224,14 @@ bad_op:
 					                        &psTex->sResource))
 					{
 						sMemInfo = *psTex->psMemInfo;
-						TexMgrGhostTexture(gc, psTex);
+						if(!TexMgrGhostTexture(gc, psTex)) return;
 					}
 				}
 				else  if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM,
 				                               &psTex->sResource))
 				{
 					sMemInfo = *psTex->psMemInfo;
-					TexMgrGhostTexture(gc, psTex);
+					if(!TexMgrGhostTexture(gc, psTex)) return;
 				}
 			}
 
@@ -4606,7 +4606,7 @@ GL_APICALL void GL_APIENTRY glCompressedTexImage2D(GLenum target, GLint level, G
 	{
 		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 		{
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex)) return;
 		}
 		else
 		{
@@ -4619,7 +4619,7 @@ GL_APICALL void GL_APIENTRY glCompressedTexImage2D(GLenum target, GLint level, G
 	}
 	else if(psTex->psEGLImageTarget)
 	{
-		ReleaseImageFromTexture(gc, psTex);
+		if(!ReleaseImageFromTexture(gc, psTex)) return;
 	}
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
@@ -5291,7 +5291,7 @@ bad_op:
 	{
 		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 		{
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex)) return;
 		}
 		else
 		{
@@ -5304,7 +5304,7 @@ bad_op:
 	}
 	else if(psTex->psEGLImageTarget)
 	{
-		ReleaseImageFromTexture(gc, psTex);
+		if(!ReleaseImageFromTexture(gc, psTex)) return;
 	}
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
@@ -6369,7 +6369,7 @@ bad_op:
 			{
 			    sMemInfo = *psTex->psMemInfo;
 	
-				TexMgrGhostTexture(gc, psTex);
+				if(!TexMgrGhostTexture(gc, psTex)) return;
 			}
 
 			if (!psTex->psMemInfo)

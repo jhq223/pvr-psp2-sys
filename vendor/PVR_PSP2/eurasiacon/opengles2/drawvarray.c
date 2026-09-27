@@ -1930,7 +1930,24 @@ static PFNDrawVArray PickDrawElementsProc(GLES2Context *gc, GLenum eMode, GLenum
  Returns            : 
  Description        : Determines the minimum and maximum indices that appear in the array pvIndices.
 ************************************************************************************/
-static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count, GLenum eType,
+static IMG_BOOL ValidateIndexBufferRange(GLES2Context *gc, IMG_UINT32 count, GLenum type, const IMG_VOID *indices)
+{
+    GLES2BufferObject *buffer = gc->sVAOMachine.psBoundElementBuffer;
+    IMG_UINT32 elementSize = type == GL_UNSIGNED_BYTE ? 1U : type == GL_UNSIGNED_SHORT ? 2U : 4U;
+    IMG_UINTPTR_T offset = (IMG_UINTPTR_T)indices;
+    if(!count) return IMG_TRUE;
+    if(buffer)
+    {
+        if(buffer->psMemInfo && !buffer->bMapped && offset <= buffer->ui32BufferSize &&
+           count <= (buffer->ui32BufferSize - offset) / elementSize)
+            return IMG_TRUE;
+    }
+    else if(indices) return IMG_TRUE;
+    SetError(gc, GL_INVALID_OPERATION);
+    return IMG_FALSE;
+}
+
+static IMG_BOOL DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count, GLenum eType,
 										 const IMG_VOID *pvIndices, IMG_UINT32 *pui32MinIndex, IMG_UINT32 *pui32MaxIndex)
 {
 	IMG_UINT32 i, ui32MinIndex, ui32MaxIndex;
@@ -1938,9 +1955,10 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
 	GLES2VertexArrayObjectMachine *psVAOMachine = &(gc->sVAOMachine);
 	GLES2BufferObject *psIndexBO = psVAOMachine->psBoundElementBuffer;
 
+    if(!ValidateIndexBufferRange(gc, ui32Count, eType, pvIndices)) return IMG_FALSE;
     if(psIndexBO && psIndexBO->bRangeCached && !psIndexBO->bMapped &&
        psIndexBO->uiRangeOffset == (IMG_UINTPTR_T)pvIndices && psIndexBO->ui32RangeCount == ui32Count && psIndexBO->ui32RangeType == eType)
-    { *pui32MinIndex = psIndexBO->ui32RangeMin; *pui32MaxIndex = psIndexBO->ui32RangeMax; return; }
+    { *pui32MinIndex = psIndexBO->ui32RangeMin; *pui32MaxIndex = psIndexBO->ui32RangeMax; return IMG_TRUE; }
     /* Setup pvTmpIndices using the current VAO's bound element buffer object */
 	if (psIndexBO) 
 	{
@@ -2021,7 +2039,7 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
 		default:
 		{
 			PVR_DPF((PVR_DBG_ERROR,"DetermineMinAndMaxIndices: Bad type (0x%X) - shouldn't be here", eType));
-			return;
+			return IMG_FALSE;
 		}
 	}
 
@@ -2033,6 +2051,7 @@ static IMG_VOID DetermineMinAndMaxIndices(GLES2Context *gc, IMG_UINT32 ui32Count
     }
     *pui32MinIndex = ui32MinIndex;
 	*pui32MaxIndex = ui32MaxIndex;
+    return IMG_TRUE;
 }
 
 
@@ -2050,6 +2069,7 @@ static const IMG_UINT16* TransformIndicesTo16Bits(GLES2Context *gc, IMG_UINT32 u
 {
 	IMG_UINT32 i;
 	IMG_UINT16 *pui16OutIndices;
+    if(!ValidateIndexBufferRange(gc, ui32Count, eType, pvIndices)) return IMG_NULL;
     if(ui32Count > 0x7fffffffU) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_NULL; }
     if(scratch && gc->ui32IndexScratchCapacity < ui32Count)
     {
@@ -2110,7 +2130,7 @@ static const IMG_UINT16* TransformIndicesTo16Bits(GLES2Context *gc, IMG_UINT32 u
  Returns            : -
  Description        : Attaches source sync dependency on the given texture to kick.
 ************************************************************************************/
-static void AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
+static IMG_BOOL AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
 {
 	PVRSRV_CLIENT_MEM_INFO *psMemInfo;
 	IMG_UINT32 i;
@@ -2132,7 +2152,7 @@ static void AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
 	else
 #endif /* defined(GLES2_EXTENSION_TEXTURE_STREAM) */
 	{
-		return;
+		return IMG_TRUE;
 	}
 
 	/* Don't add the dependency if we've already seen this sync object */
@@ -2140,19 +2160,21 @@ static void AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
 	{
 		if(gc->psRenderSurface->apsSrcSurfSyncInfo[i] == psMemInfo->psClientSyncInfo)
 		{
-			return;
+			return IMG_TRUE;
 		}
 	}
 
 	/* FIXME: Do not attach the texture if we have run out of slots */
-	if(gc->psRenderSurface->ui32NumSrcSyncs == SGX_MAX_SRC_SYNCS)
+	if(gc->psRenderSurface->ui32NumSrcSyncs >= SGX_MAX_SRC_SYNCS)
 	{
 		PVR_DPF((PVR_DBG_WARNING, "Ran out of sync objects on frame %u", gc->ui32FrameNum));
-		return;
+        SetError(gc, GL_OUT_OF_MEMORY);
+		return IMG_FALSE;
 	}
 
 	gc->psRenderSurface->apsSrcSurfSyncInfo[gc->psRenderSurface->ui32NumSrcSyncs] = psMemInfo->psClientSyncInfo;
 	gc->psRenderSurface->ui32NumSrcSyncs++;
+    return IMG_TRUE;
 }
 
 /***********************************************************************************
@@ -2162,7 +2184,7 @@ static void AttachTextureDependency(GLES2Context *gc, GLES2Texture *psTex)
  Returns            : -
  Description        : Attaches all textures used by the given shader to the current surface.
 ************************************************************************************/
-static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2ProgramShader *psShader, GLES2Texture **seen, IMG_UINT32 *seenCount)
+static IMG_BOOL AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2ProgramShader *psShader, GLES2Texture **seen, IMG_UINT32 *seenCount)
 {
 	IMG_UINT32                i;
 	const GLES2TextureSampler *psTextureSampler;
@@ -2175,7 +2197,7 @@ static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
 	*/
 	if(!psShader->ui32SamplersActive)
 	{
-		return;
+		return IMG_TRUE;
 	}
 
 	for(i=0; i < GLES2_MAX_TEXTURE_UNITS; i++)
@@ -2213,16 +2235,18 @@ static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
 
                 if(psTex->bResidence)
 				{
-					AttachTextureDependency(gc, psTex);
+					if(!AttachTextureDependency(gc, psTex)) return IMG_FALSE;
 
 					/* Attach this texture to the current frame of the current render surface */
-					if(KRM_Attach(&gc->psSharedState->psTextureManager->sKRM, gc->psRenderSurface,
+					if(!KRM_Attach(&gc->psSharedState->psTextureManager->sKRM, gc->psRenderSurface,
                                   &gc->psRenderSurface->sRenderStatusUpdate, &psTex->sResource))
-                        seen[(*seenCount)++] = psTex;
+                        { SetError(gc, GL_OUT_OF_MEMORY); return IMG_FALSE; }
+                    seen[(*seenCount)++] = psTex;
 				}
 			}
 		}
 	}
+    return IMG_TRUE;
 }
 
 
@@ -2234,18 +2258,20 @@ static IMG_VOID AttachUsedTexturesToCurrentSurface(GLES2Context *gc, const GLES2
  Description        : Attaches all resources currently bound to the current surface using the
                       frame resource managers.
 ************************************************************************************/
-static IMG_VOID AttachAllUsedResourcesToCurrentSurface(GLES2Context *gc)
+static IMG_BOOL AttachAllUsedResourcesToCurrentSurface(GLES2Context *gc)
 {
     GLES2Texture *seen[GLES2_MAX_TEXTURE_UNITS * 2];
     IMG_UINT32 seenCount = 0;
 	/* Attach the textures used in the vertex and in the fragment shader */
-	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sVertex, seen, &seenCount);
-	AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sFragment, seen, &seenCount);
+	if(!AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sVertex, seen, &seenCount)) return IMG_FALSE;
+	if(!AttachUsedTexturesToCurrentSurface(gc, &gc->sProgram.psCurrentProgram->sFragment, seen, &seenCount)) return IMG_FALSE;
 
 	/* Attach USSE fragment variants (set up by SetupUSEFragmentShader) */
-	KRM_Attach(&gc->psSharedState->sUSEShaderVariantKRM, 
+	if(!KRM_Attach(&gc->psSharedState->sUSEShaderVariantKRM,
 					  gc->psRenderSurface, &gc->psRenderSurface->sRenderStatusUpdate,
-					  &gc->sProgram.psCurrentFragmentVariant->sResource);
+					  &gc->sProgram.psCurrentFragmentVariant->sResource))
+    { SetError(gc, GL_OUT_OF_MEMORY); return IMG_FALSE; }
+    return IMG_TRUE;
 }
 
 
@@ -2257,7 +2283,7 @@ static IMG_VOID AttachAllUsedResourcesToCurrentSurface(GLES2Context *gc)
  Description        : Sets up status writebacks for all Buffer Objects 
                       and the VAO used in current kick.
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
+IMG_INTERNAL IMG_BOOL AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 {
 	GLES2VertexArrayObjectMachine *psVAOMachine = &(gc->sVAOMachine);
 	GLES2VertexArrayObject *psVAO = gc->sVAOMachine.psActiveVAO;
@@ -2270,7 +2296,7 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 	/* Add in the VAO if it possesses MemInfo for PDS program */
 	if (psVAO->psMemInfo)
 	{
-		KRM_Attach(&gc->sVAOKRM, gc, &gc->sKRMTAStatusUpdate, &psVAO->sResource);
+		if(!KRM_Attach(&gc->sVAOKRM, gc, &gc->sKRMTAStatusUpdate, &psVAO->sResource)) goto failed;
 	}
 
 	/* Add in any vertex buffer objects */
@@ -2293,8 +2319,11 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 			if(psBufObj && !psAPMachine->bIsCurrentState)
 			{
 				for(j = 0; j < seenCount; ++j) if(seen[j] == psBufObj) break;
-                if(j == seenCount && KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource))
+                if(j == seenCount)
+                {
+                    if(!KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource)) goto failed;
                     seen[seenCount++] = psBufObj;
+                }
 			}
 		}
 	}
@@ -2307,9 +2336,16 @@ IMG_INTERNAL IMG_VOID AttachAllUsedBOsAndVAOToCurrentKick(GLES2Context *gc)
 		psBufObj = psVAOMachine->psBoundElementBuffer;
 
 		for(j = 0; j < seenCount; ++j) if(seen[j] == psBufObj) break;
-                if(j == seenCount && KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource))
+                if(j == seenCount)
+                {
+                    if(!KRM_Attach(&gc->psSharedState->sBufferObjectKRM, gc, &gc->sKRMTAStatusUpdate, &psBufObj->sResource)) goto failed;
                     seen[seenCount++] = psBufObj;
+                }
 	}
+    return IMG_TRUE;
+failed:
+    SetError(gc, GL_OUT_OF_MEMORY);
+    return IMG_FALSE;
 }
 
 
@@ -2513,7 +2549,8 @@ GL_APICALL void GL_APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count
 	}
 
 	/* Attach all used resources to the current surface */
-	AttachAllUsedResourcesToCurrentSurface(gc);
+	if(!AttachAllUsedResourcesToCurrentSurface(gc))
+    { PVRSRVUnlockMutex(gc->psRenderSurface->hMutex); GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode); GLES2_TIME_STOP(GLES2_TIMES_glDrawArrays); return; }
 
 	pfnDrawArrays = PickDrawArraysProc(gc, mode, (IMG_UINT32)count);
 
@@ -2678,7 +2715,8 @@ bad_enum:
 	}
 
 	/* Attach all used resources to the current surface */
-	AttachAllUsedResourcesToCurrentSurface(gc);
+	if(!ValidateIndexBufferRange(gc, (IMG_UINT32)count, type, indices) ||
+       !AttachAllUsedResourcesToCurrentSurface(gc)) goto StopTimerAndReturn;
 
 
 	/* Setup VAOMachine */
@@ -2712,7 +2750,7 @@ bad_enum:
 	{
 		if(psVAOMachine->ui32ControlWord & ATTRIBARRAY_SOURCE_VARRAY)
 		{
-			DetermineMinAndMaxIndices(gc, (IMG_UINT32)count, type, indices, &ui32MinIndex, &ui32MaxIndex);
+			if(!DetermineMinAndMaxIndices(gc, (IMG_UINT32)count, type, indices, &ui32MinIndex, &ui32MaxIndex)) goto StopTimerAndReturn;
 
 			ui32VertexStart = ui32MinIndex;
 			ui32VertexCount = ui32MaxIndex - ui32MinIndex + 1;
@@ -3581,6 +3619,17 @@ static PFNMultiDrawVArray PickMultiDrawElementsProc(GLES2Context *gc, GLenum eMo
 					  Will validate as necessary, then send control, state and attrib 
 					  data to HW.
 ************************************************************************************/
+static IMG_BOOL AddMultiDrawCount(GLenum mode, IMG_UINT32 count, IMG_UINT32 *total)
+{
+    IMG_UINT32 expanded;
+    /* Every downstream byte size must fit even for 32-bit indices. */
+    if(count > 0x3FFFFFFFU) return IMG_FALSE;
+    expanded = primDirectIndex[mode] ? count : GetNumIndices(mode, count);
+    if(expanded > 0x3FFFFFFFU - *total) return IMG_FALSE;
+    *total += expanded;
+    return IMG_TRUE;
+}
+
 GL_API_EXT void GL_APIENTRY glMultiDrawArraysEXT(GLenum mode, GLint * first, GLsizei * count, GLsizei primcount)
 {
 	PFNMultiDrawVArray pfnMultiDrawArrays;
@@ -3588,8 +3637,9 @@ GL_API_EXT void GL_APIENTRY glMultiDrawArraysEXT(GLenum mode, GLint * first, GLs
 	IMG_UINT32 ui32NoClears = 0;
 	IMG_UINT32 ui32MinFirst = 0xFFFFFFFF, ui32MaxCount = 0;
 	IMG_INT32 i;
-	IMG_UINT32 * pui32ActualCount;
-	IMG_BOOL bIsHWSupported = primDirectIndex[mode];
+	IMG_UINT32 * pui32ActualCount = IMG_NULL;
+    IMG_BOOL surfaceLocked = IMG_FALSE;
+	IMG_BOOL bIsHWSupported = mode <= GL_TRIANGLE_FAN ? primDirectIndex[mode] : IMG_FALSE;
 	GLES2VertexArrayObjectMachine *psVAOMachine;
 
 
@@ -3600,7 +3650,7 @@ GL_API_EXT void GL_APIENTRY glMultiDrawArraysEXT(GLenum mode, GLint * first, GLs
 	GLES2_TIME_START(GLES2_TIMES_glMultiDrawArrays);
 	GLES2_TIME_START(GLES2_TIMER_ARRAY_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 
-	if(primcount < 0) 
+	if(primcount < 0 || (IMG_UINT32)primcount > 0xFFFFFFFFU / sizeof(IMG_UINT32))
 	{
 bad_value:
 		SetError(gc, GL_INVALID_VALUE);
@@ -3608,7 +3658,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	if(primcount == 0)
@@ -3616,13 +3666,13 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 	
 	for(i = 0; i < primcount; i++)
 	{
 		/* check that first and count are positive */
-		if(first[i] < 0 || count[i] < 0) 
+		if(first[i] < 0 || count[i] < 0 || (IMG_UINT32)count[i] > 0x7FFFFFFFU - (IMG_UINT32)first[i])
 		{
 			goto bad_value;
 		}
@@ -3635,7 +3685,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	pui32ActualCount = GLES2Malloc(gc, sizeof(IMG_UINT32)*(IMG_UINT32)primcount);
@@ -3649,7 +3699,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	for(i = 0; i < primcount; i++)
@@ -3664,15 +3714,16 @@ bad_value:
 			 Then we want: actualcount[0] = 3, actualcount[1] = 4, because the original counts are
 			 used by write_line_strips_or_loops, and numindices = 10, as we need more indices 
 		*/
+		if(!AddMultiDrawCount(mode, (IMG_UINT32)count[i], &ui32NumIndices)) goto bad_value;
 		if(bIsHWSupported)
 		{
 			pui32ActualCount[i] = GetNumIndices(mode, (IMG_UINT32)(count[i]));
-			ui32NumIndices += (IMG_UINT32)(count[i]); 
+
 		}
 		else
 		{
 			pui32ActualCount[i] = (IMG_UINT32)(count[i]);	
-			ui32NumIndices += GetNumIndices(mode, (IMG_UINT32)(count[i])); 
+
 		}
 
 		if((IMG_UINT32)first[i] < ui32MinFirst)
@@ -3694,7 +3745,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	if(!gc->sProgram.psCurrentProgram || !gc->sProgram.psCurrentProgram->bSuccessfulLink)
@@ -3704,7 +3755,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	if(GetFrameBufferCompleteness(gc) != GL_FRAMEBUFFER_COMPLETE)
@@ -3714,7 +3765,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 	
 	if ((gc->sState.sPolygon.eCullMode==GL_FRONT_AND_BACK) && ((gc->ui32Enables & GLES2_CULLFACE_ENABLE) != 0) &&
@@ -3724,7 +3775,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	if ((mode==GL_POINTS) && ((gc->sProgram.psCurrentProgram->ui32OutputSelects & EURASIA_MTE_SIZE) == 0))
@@ -3733,7 +3784,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	if(!PrepareToDraw(gc, &ui32NoClears, IMG_TRUE))
@@ -3743,9 +3794,10 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
+    surfaceLocked = IMG_TRUE;
 #if defined(FIX_HW_BRN_29546) || defined(FIX_HW_BRN_31728)
 	HandlePrimitiveTypeChange(gc, mode);
 #endif /* defined(FIX_HW_BRN_29546) || defined(FIX_HW_BRN_31728) */
@@ -3755,12 +3807,12 @@ bad_value:
 		if(ValidateState(gc)!=GLES2_NO_ERROR)
 		{
 			PVR_DPF((PVR_DBG_ERROR,"glMultiDrawArrays: ValidateState() failed"));
-			PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+
 			
 			GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 			GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-			return;
+			goto cleanup;
 		}
 	}
 
@@ -3775,27 +3827,27 @@ bad_value:
 	*/
 	if (psVAOMachine->ui32ControlWord & ATTRIBARRAY_BAD_BUFOBJ)
 	{
-		PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 
-		return;
+		goto cleanup;
 	}
 
 	/* Check whether any buffer object is mapped */
 	if(psVAOMachine->ui32ControlWord & ATTRIBARRAY_MAP_BUFOBJ)
 	{
 		SetError(gc, GL_INVALID_OPERATION);
-		PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+
 
 		GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
 		
-		return;
+		goto cleanup;
 	}
 
 	/* Attach all used resources to the current surface */
-	AttachAllUsedResourcesToCurrentSurface(gc);
+	if(!AttachAllUsedResourcesToCurrentSurface(gc)) goto cleanup;
 
 	pfnMultiDrawArrays = PickMultiDrawArraysProc(gc, mode, ui32NumIndices);
 
@@ -3805,14 +3857,14 @@ bad_value:
 						  ui32NumIndices, 0, IMG_NULL, 
 						  ui32MinFirst, ui32MaxCount, (IMG_UINT32)primcount);
 
-	GLES2Free(IMG_NULL, pui32ActualCount);
+
 
 	/*
 		Update vertex and index buffers committed primitive offset
 	*/
 	CBUF_UpdateVIBufferCommittedPrimOffsets(gc->apsBuffers, &gc->psRenderSurface->bPrimitivesSinceLastTA, (IMG_VOID *)gc, KickLimit_ScheduleTA);
 	
-	PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+
 
 	GLES2_TIME_STOP(GLES2_TIMER_ARRAY_POINTS_TIME+mode);
 	GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawArrays);
@@ -3821,6 +3873,9 @@ bad_value:
 	GLES2_PROFILE_INCREMENT_DRAWARRAYS_VERTEXCOUNT(mode, ui32MaxCount);
 
 	GLES2_PROFILE_ADD_STATE_METRIC;
+cleanup:
+    if(surfaceLocked) PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+    GLES2Free(IMG_NULL, pui32ActualCount);
 }
 
 
@@ -3839,11 +3894,12 @@ GL_API_EXT void GL_APIENTRY glMultiDrawElementsEXT(GLenum mode, const GLsizei *c
 	IMG_UINT32 ui32NoClears = 0;
 	IMG_UINT32 ui32VertexStart, ui32VertexCount;
 	const IMG_VOID **ppvElements = IMG_NULL, **ppvActualIndices = IMG_NULL;
-	IMG_BOOL bIndicesWerePromoted = IMG_FALSE;
+	IMG_UINT32 promotedCount = 0;
+    IMG_BOOL surfaceLocked = IMG_FALSE;
 	PFNMultiDrawVArray pfnMultiDrawElements;
 	IMG_UINT32 i;
 	IMG_UINT32 * pui32ActualCount = IMG_NULL, ui32ActualPrimCount = 0;
-	IMG_BOOL bIsHWSupported = primDirectIndex[mode];
+	IMG_BOOL bIsHWSupported = mode <= GL_TRIANGLE_FAN ? primDirectIndex[mode] : IMG_FALSE;
 	GLES2VertexArrayObjectMachine *psVAOMachine;
 
 
@@ -3854,7 +3910,8 @@ GL_API_EXT void GL_APIENTRY glMultiDrawElementsEXT(GLenum mode, const GLsizei *c
 	GLES2_TIME_START(GLES2_TIMES_glMultiDrawElements);
 	GLES2_TIME_START(GLES2_TIMER_ELEMENT_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 
-	if(primcount < 0) 
+	if(primcount < 0 || (IMG_UINT32)primcount > 0xFFFFFFFFU / sizeof(IMG_VOID *) ||
+       (IMG_UINT32)primcount > 0xFFFFFFFFU / sizeof(IMG_UINT32))
 	{
 bad_value:
 		SetError(gc, GL_INVALID_VALUE);
@@ -3862,7 +3919,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ELEMENT_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawElements);
 
-		return;
+		goto StopTimerAndReturn;
 	}
 
 	if(primcount == 0)
@@ -3877,7 +3934,7 @@ bad_value:
 		GLES2_TIME_STOP(GLES2_TIMER_ELEMENT_POINTS_TIME+(mode & GLES2_TIMER_ARRAY_MODE_MASK));
 		GLES2_TIME_STOP(GLES2_TIMES_glMultiDrawElements);
 
-		return;
+		goto StopTimerAndReturn;
 	}
 
 	switch(type) 
@@ -3959,6 +4016,7 @@ bad_value:
 		goto StopTimerAndReturn;
 	}
 
+    surfaceLocked = IMG_TRUE;
 #if defined(FIX_HW_BRN_29546) || defined(FIX_HW_BRN_31728)
 	HandlePrimitiveTypeChange(gc, mode);
 #endif /* defined(FIX_HW_BRN_29546) || defined(FIX_HW_BRN_31728) */
@@ -4009,15 +4067,16 @@ bad_value:
 			 Then we want: actualcount[0] = 3, actualcount[1] = 4, because the original counts are
 			 used by write_line_strips_or_loops, and numindices = 10, as we need more indices 
 		*/
+		if(!AddMultiDrawCount(mode, (IMG_UINT32)count[i], &ui32NumIndices)) goto bad_value;
 		if(bIsHWSupported)
 		{
 			pui32ActualCount[ui32ActualPrimCount] = GetNumIndices(mode, (IMG_UINT32)(count[i]));
-			ui32NumIndices += (IMG_UINT32)(count[i]); 
+
 		}
 		else
 		{
 			pui32ActualCount[ui32ActualPrimCount] = (IMG_UINT32)(count[i]);	
-			ui32NumIndices += GetNumIndices(mode, (IMG_UINT32)(count[i])); 
+
 		}
 
 		/* Record index pointers for primitives with count > 0 */
@@ -4026,7 +4085,7 @@ bad_value:
 			ppvActualIndices[ui32ActualPrimCount] = indices[i];
 	
 			/* 3 */
-			DetermineMinAndMaxIndices(gc, pui32ActualCount[ui32ActualPrimCount], type, indices[i], &ui32TempMin, &ui32TempMax);
+			if(!DetermineMinAndMaxIndices(gc, pui32ActualCount[ui32ActualPrimCount], type, indices[i], &ui32TempMin, &ui32TempMax)) goto StopTimerAndReturn;
 
 			if(ui32TempMin < ui32MinIndex)
 			{
@@ -4107,7 +4166,7 @@ bad_value:
 	pfnMultiDrawElements = PickMultiDrawElementsProc(gc, mode, type, ui32NumIndices, ui32VertexCount, ui32MaxIndex);
 
 	/* Attach all used resources to the current surface */
-	AttachAllUsedResourcesToCurrentSurface(gc);
+	if(!AttachAllUsedResourcesToCurrentSurface(gc)) goto StopTimerAndReturn;
 
 	/* All 8-bit indices must be promoted to 16-bit */
 	if(GL_UNSIGNED_BYTE == type)
@@ -4120,8 +4179,8 @@ bad_value:
 			{
 				goto StopTimerAndReturn;
 			}
+			++promotedCount;
 		}	
-		bIndicesWerePromoted = IMG_TRUE;
 		type = GL_UNSIGNED_SHORT;		
 	}
 	else if (pfnMultiDrawElements != MultiDrawElementsIndexBO) /* Use sVAOMachine or sBufObjMachine 's element bufobj */
@@ -4130,6 +4189,7 @@ bad_value:
 		for(i = 0; i < ui32ActualPrimCount; i++)
 		{
 			PVRSRV_CLIENT_MEM_INFO *psMemInfo = IMG_NULL;
+            ppvElements[i] = ppvActualIndices[i];
 			GLES2BufferObject *psIndexBO = psVAOMachine->psBoundElementBuffer;
 
 			/* Setup psMemInfo using the current VAO's bound element buffer object */
@@ -4155,13 +4215,6 @@ bad_value:
 	/* Call the actual draw element function */
 	(*pfnMultiDrawElements)(gc, mode, 0, pui32ActualCount, ui32NumIndices, type, ppvElements, ui32VertexStart, ui32VertexCount, ui32ActualPrimCount);
 
-	if(bIndicesWerePromoted) 
-	{
-		for(i = 0; i < ui32ActualPrimCount; i++)
-		{
-			GLES2Free(IMG_NULL, (IMG_VOID *)((IMG_UINTPTR_T)(ppvElements[i])));
-		}
-	}
 
 	/*
 		Update vertex and index buffers committed primitive offset
@@ -4174,6 +4227,8 @@ bad_value:
 
 
 StopTimerAndReturn:
+    if(surfaceLocked) PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+    for(i = 0; i < promotedCount; ++i) GLES2Free(IMG_NULL, (IMG_VOID *)ppvElements[i]);
 
 	if(ppvElements)
 	{

@@ -215,6 +215,9 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 		}
 
 
+		if(psSharedState->pvUNCHeap) sceHeapDeleteHeap(psSharedState->pvUNCHeap);
+		if(psSharedState->pvCDRAMHeap) sceHeapDeleteHeap(psSharedState->pvCDRAMHeap);
+
 		/* Clear for safety */
 		GLES2MemSet(psSharedState, 0, sizeof(GLES2ContextSharedState));
 
@@ -222,6 +225,8 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 	}
 
 	gc->psSharedState = IMG_NULL;
+	gc->pvUNCHeap = IMG_NULL;
+	gc->pvCDRAMHeap = IMG_NULL;
 }
 
 /***********************************************************************************
@@ -595,7 +600,9 @@ static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLc
 	heapOpt.size = sizeof(SceHeapOptParam);
 	heapOpt.memblockType = SCE_HEAP_OPT_MEMBLOCK_TYPE_USER;
 
-	if (gc->sAppHints.ui32UNCTexHeapSize)
+	gc->pvUNCHeap = gc->psSharedState->pvUNCHeap;
+	gc->pvCDRAMHeap = gc->psSharedState->pvCDRAMHeap;
+	if (!psShareContext && gc->sAppHints.ui32UNCTexHeapSize)
 	{
 		heapOpt.memblockType = SCE_HEAP_OPT_MEMBLOCK_TYPE_USER_NC;
 
@@ -610,11 +617,12 @@ static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLc
 		{
 			PVR_DPF((PVR_DBG_ERROR, "InitContext: Couldn't create UNC heap"));
 
-			return IMG_FALSE;
+			goto FAILED_TASync;
 		}
+		gc->psSharedState->pvUNCHeap = gc->pvUNCHeap;
 	}
 
-	if (gc->sAppHints.ui32CDRAMTexHeapSize)
+	if (!psShareContext && gc->sAppHints.ui32CDRAMTexHeapSize)
 	{
 		heapOpt.memblockType = SCE_HEAP_OPT_MEMBLOCK_TYPE_CDRAM;
 
@@ -628,19 +636,14 @@ static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLc
 		if (!gc->pvCDRAMHeap)
 		{
 			PVR_DPF((PVR_DBG_ERROR, "InitContext: Couldn't create CDRAM heap"));
-			if (gc->pvUNCHeap)
-			{
-				sceHeapDeleteHeap(gc->pvUNCHeap);
-			}
-
-			return IMG_FALSE;
+			goto FAILED_TASync;
 		}
+		gc->psSharedState->pvCDRAMHeap = gc->pvCDRAMHeap;
 	}
 
     if(!SWTextureInit(gc))
     {
-        FreeContextSharedState(gc);
-        goto FAILED_sceUltUlthreadRuntimeCreate;
+        goto FAILED_TASync;
     }
 
 #if defined(GLES2_EXTENSION_VERTEX_ARRAY_OBJECT)
@@ -1023,18 +1026,15 @@ FAILED_CreateHashTable:
 
 FAILED_TASync:
     SWTextureDestroy(gc);
+#if defined(GLES2_EXTENSION_VERTEX_ARRAY_OBJECT)
+	for(i = 0; i < GLES2_MAX_UNSHAREABLE_NAMETYPE; ++i)
+	{
+		if(gc->apsNamesArray[i]) DestroyNamesArray(gc, gc->apsNamesArray[i]);
+		gc->apsNamesArray[i] = IMG_NULL;
+	}
+#endif
+    if(gc->sVAOKRM.bInitialized) KRM_Destroy(gc, &gc->sVAOKRM);
     FreeContextSharedState(gc);
-
-FAILED_sceUltUlthreadRuntimeCreate:
-
-	if (gc->pvUNCHeap)
-	{
-		sceHeapDeleteHeap(gc->pvUNCHeap);
-	}
-	if (gc->pvCDRAMHeap)
-	{
-		sceHeapDeleteHeap(gc->pvCDRAMHeap);
-	}
 
 FAILED_CreateSharedState:
 
@@ -1061,12 +1061,29 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 {
 	IMG_UINT32 i;
 	IMG_BOOL bPass = IMG_TRUE;
+	IMG_BOOL bLastSharedContext;
 
 	if(!gc->psSharedState)
 	{
 		/* If there's no shared state then the rest of the context hasn't been initialised */
 		return IMG_TRUE;
 	}
+	/* Submit pending work before waiting; an unsubmitted attachment cannot retire. */
+	if(gc->psRenderSurface && gc->psRenderSurface->bPrimitivesSinceLastTA &&
+	   ScheduleTA(gc, gc->psRenderSurface, GLES2_SCHEDULE_HW_WAIT_FOR_3D) != IMG_EGL_NO_ERROR)
+		return IMG_FALSE;
+	/* Keep the context and its storage alive if outstanding work cannot retire. */
+	if(gc->sVAOKRM.bInitialized &&
+	   !KRM_WaitForAllResources(&gc->sVAOKRM, GLES2_DEFAULT_WAIT_RETRIES))
+		return IMG_FALSE;
+	PVRSRVLockMutex(gc->psSharedState->hPrimaryLock);
+	bLastSharedContext = gc->psSharedState->ui32RefCount == 1;
+	PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
+	if(bLastSharedContext &&
+	   (!KRM_WaitForAllResources(&gc->psSharedState->psTextureManager->sKRM, GLES2_DEFAULT_WAIT_RETRIES) ||
+	    !KRM_WaitForAllResources(&gc->psSharedState->sUSEShaderVariantKRM, GLES2_DEFAULT_WAIT_RETRIES) ||
+	    !KRM_WaitForAllResources(&gc->psSharedState->sBufferObjectKRM, GLES2_DEFAULT_WAIT_RETRIES)))
+		return IMG_FALSE;
 
 #if defined(DEBUG)
 	if(gc->pShaderAnalysisHandle)
@@ -1115,6 +1132,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	/* FrameBuffers must be freed _after_ freeing textures due to FBOs. See FreeTexture() */
 	FreeFrameBufferState(gc);
 
+	SWTextureDestroy(gc);
 	FreeContextSharedState(gc);
 
 	/* TexStreamsState must be freed after freeing all the default and named textures, 
@@ -1152,18 +1170,6 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	PVRUniPatchDestroyContext(gc->sProgram.pvUniPatchContext);
 	gc->sProgram.pvUniPatchContext = IMG_NULL;
 
-    SWTextureDestroy(gc);
-
-	if (gc->pvUNCHeap)
-	{
-		sceHeapDeleteHeap(gc->pvUNCHeap);
-	}
-	if (gc->pvCDRAMHeap)
-	{
-		sceHeapDeleteHeap(gc->pvCDRAMHeap);
-	}
-
-
 	return bPass;
 }	
 
@@ -1181,6 +1187,9 @@ static IMG_BOOL GLES2CreateGC(SrvSysContext *psSysContext,
 							  EGLContextHandle hShareContext)
 {
 	GLES2Context *gc, *psShareContext;
+	IMG_PVOID pvDummy;
+	SceKernelMemBlockInfo sMbInfo;
+	PVRSRV_ERROR mapError;
 
 	psShareContext = (GLES2Context *)hShareContext;
 
@@ -1204,11 +1213,18 @@ static IMG_BOOL GLES2CreateGC(SrvSysContext *psSysContext,
 	}
 
 	//TODOPSP2: hi again Rinne!
-	IMG_PVOID pvDummy = GLES2Malloc(0, 4);
-	SceKernelMemBlockInfo sMbInfo;
+	pvDummy = GLES2Malloc(0, 4);
 	sMbInfo.size = sizeof(SceKernelMemBlockInfo);
-	sceKernelGetMemBlockInfoByAddr(pvDummy, &sMbInfo);
-	PVRSRVMapMemoryToGpu(
+	if(!pvDummy) goto Failed_GC_Creation;
+	if(sceKernelGetMemBlockInfoByAddr(pvDummy, &sMbInfo) < 0)
+	{
+		GLES2Free(IMG_NULL, pvDummy);
+		goto Failed_GC_Creation;
+	}
+	mapError = PVRSRVCheckMappedMemory(gc->ps3DDevData,
+		(IMG_SID)gc->psSysContext->hDevMemContext, sMbInfo.mappedBase, sMbInfo.mappedSize,
+		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE);
+	if(mapError != PVRSRV_OK) mapError = PVRSRVMapMemoryToGpu(
 		gc->ps3DDevData,
 		gc->psSysContext->hDevMemContext,
 		0,
@@ -1218,6 +1234,7 @@ static IMG_BOOL GLES2CreateGC(SrvSysContext *psSysContext,
 		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MEM_USER_SUPPLIED_DEVVADDR,
 		IMG_NULL);
 	GLES2Free(IMG_NULL, pvDummy);
+	if(mapError != PVRSRV_OK) goto Failed_GC_Creation;
 
 #if defined (TIMING) || defined (DEBUG)
 	if (!InitMetrics(gc))
@@ -1261,7 +1278,7 @@ static IMG_BOOL GLES2DestroyGC(EGLContextHandle hContext)
 	{
 		PVR_DPF((PVR_DBG_ERROR,"GLES2DestroyGC: Failed to deinit the gc"));
 
-		bReturnValue = IMG_FALSE;
+		return IMG_FALSE;
 	}
 
 	DestroyExtensionString(gc);
@@ -1775,4 +1792,3 @@ IMG_INTERNAL const IMG_OGLES2EGL_Interface sGLES2FunctionTable =
 /******************************************************************************
  End of file (eglglue.c)
 ******************************************************************************/
-

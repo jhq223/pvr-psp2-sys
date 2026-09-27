@@ -87,7 +87,7 @@ IMG_BOOL HashTableSearch(GLES2Context *gc,
 						IMG_UINT32	  ui32HashKeySizeInDWords,	
 						IMG_UINT32    *pui32Item);
 
-IMG_VOID HashTableInsert(GLES2Context *gc,
+IMG_BOOL HashTableInsert(GLES2Context *gc,
 						HashTable	  *psHashTable,
 						HashValue	  tHashValue,
 						IMG_UINT32	  *pui32HashKey,
@@ -101,4 +101,3 @@ IMG_BOOL HashTableDelete(GLES2Context *gc,
 						IMG_UINT32	  ui32HashKeySizeInDWords,
 						IMG_UINT32	  *pui32Item);
 #endif
-

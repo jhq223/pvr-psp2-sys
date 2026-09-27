@@ -551,6 +551,16 @@ IMG_INTERNAL IMG_BOOL InsertNamedItem(GLES2NamesArray *psNamesArray, GLES2NamedI
  Returns            : The data associated with the given name
  Description        : Increments the reference counter of the given named item
 ************************************************************************************/
+IMG_INTERNAL GLES2NamedItem* NamedItemLookup(GLES2NamesArray *psNamesArray, IMG_UINT32 ui32Name)
+{
+	GLES2NamedItem *item;
+	LOCK_NAMES_ARRAY(psNamesArray);
+	item = LookupItemByName(psNamesArray, ui32Name);
+	if(item && item->bGeneratedButUnused) item = IMG_NULL;
+	UNLOCK_NAMES_ARRAY(psNamesArray);
+	return item;
+}
+
 IMG_INTERNAL GLES2NamedItem* NamedItemAddRef(GLES2NamesArray *psNamesArray, IMG_UINT32 ui32Name)
 {
 	GLES2NamedItem *psNamedItem;

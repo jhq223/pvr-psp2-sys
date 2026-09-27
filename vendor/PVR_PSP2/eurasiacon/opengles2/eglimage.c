@@ -33,7 +33,7 @@
  Returns            : 
  Description        : Unbinds an egl image from a texture
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *psTex)
+IMG_INTERNAL IMG_BOOL ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *psTex)
 {
 	IMG_UINT8 *pui8Dest;
 	EGLImage *psEGLImage;
@@ -220,12 +220,13 @@ IMG_INTERNAL IMG_VOID ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *ps
 		{
 			PVR_DPF((PVR_DBG_ERROR,"ReleaseImageFromTexture: Unsupported pixel format"));
 
-			return;
+			return IMG_FALSE;
 		}
 	}
 
 	pui8Dest = TextureCreateLevel(gc, psTex, 0, ui32InternalFormat, psTexFormat, psEGLImage->ui32Width, psEGLImage->ui32Height);
 
+	if(!pui8Dest) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_FALSE; }
 	if(pui8Dest)
 	{
 		if(psEGLImage->bTwiddled)
@@ -280,7 +281,7 @@ IMG_INTERNAL IMG_VOID ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *ps
 	/* If the texture was live we must ghost it */
 	if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 	{
-		TexMgrGhostTexture(gc, psTex);
+		if(!TexMgrGhostTexture(gc, psTex)) return IMG_FALSE;
 	}
 	else
 	{
@@ -296,6 +297,7 @@ IMG_INTERNAL IMG_VOID ReleaseImageFromTexture(GLES2Context *gc, GLES2Texture *ps
 
 	/* hmm... */
 	psTex->ui32LevelsConsistent = GLES2_TEX_UNKNOWN;
+    return IMG_TRUE;
 }
 
 
@@ -363,7 +365,7 @@ GL_API_EXT void GL_APIENTRY glEGLImageTargetTexture2DOES(GLenum target, GLeglIma
 		/* If the texture was live we must ghost it */
 		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 		{
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex)) return;
 		}
 		else
 		{
@@ -376,7 +378,7 @@ GL_API_EXT void GL_APIENTRY glEGLImageTargetTexture2DOES(GLenum target, GLeglIma
 	{
 		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
 		{
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex)) return;
 		}
 		else
 		{

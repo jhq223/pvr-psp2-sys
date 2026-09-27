@@ -757,7 +757,7 @@ IMG_INTERNAL IMG_BOOL KRM_WaitForAllResources(const KRMKickResourceManager *psMg
 
 	while(psResource && bSuccess)
 	{
-		bSuccess = WaitUntilResourceIsNotNeeded(psMgr, psResource, ui32MaxRetries);
+		bSuccess = WaitUntilResourceIsNotNeeded(psMgr, psResource, ui32MaxRetries) && !IsResourceNeeded(psMgr, psResource);
 
 		psResource = psResource->psNext;
 	}
@@ -767,7 +767,7 @@ IMG_INTERNAL IMG_BOOL KRM_WaitForAllResources(const KRMKickResourceManager *psMg
 
 	while(psResource && bSuccess)
 	{
-		bSuccess = WaitUntilResourceIsNotNeeded(psMgr, psResource, ui32MaxRetries);
+		bSuccess = WaitUntilResourceIsNotNeeded(psMgr, psResource, ui32MaxRetries) && !IsResourceNeeded(psMgr, psResource);
 
 		psResource = psResource->psNext;
 	}

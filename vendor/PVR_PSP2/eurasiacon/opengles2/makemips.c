@@ -1478,7 +1478,7 @@ IMG_BOOL IMG_INTERNAL MakeTextureMipmapLevels(GLES2Context *gc, GLES2Texture *ps
 	   KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource) &&
 	   (psTex->ui32NumLevels > 1))
 	{
-		TexMgrGhostTexture(gc, psTex);
+		if(!TexMgrGhostTexture(gc, psTex)) return IMG_FALSE;
 	}
 
 	/* Check Base Level textures for each face */

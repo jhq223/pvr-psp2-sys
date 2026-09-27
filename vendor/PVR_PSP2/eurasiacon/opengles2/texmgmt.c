@@ -362,7 +362,8 @@ static IMG_VOID DestroyTextureGhostKRM(IMG_VOID *pvContext, KRMResource *psResou
 	
 	gc->psSharedState->psTextureManager->ui32GhostMem -= psGhost->ui32Size;
 
-	GLES2Free(IMG_NULL, psGhost);
+	if(psGhost->psOwner) GLES2Free(IMG_NULL, psGhost->psOwner);
+    else GLES2Free(IMG_NULL, psGhost);
 }
 
 /***********************************************************************************
@@ -870,19 +871,9 @@ IMG_INTERNAL IMG_BOOL SetupTextureRenderTargetControlWords(GLES2Context *gc, GLE
  Returns            : Success
  Description        : UTILITY: Creates a ghost of a texture and appends it to the ghosts list.
 ************************************************************************************/
-IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(GLES2Context *gc, GLES2Texture *psTex)
+static IMG_VOID GhostTextureStorage(GLES2Context *gc, GLES2Texture *psTex, GLES2Ghost *psGhost)
 {
-    SWTextureWait(gc, psTex);
-	GLES2TextureManager *psTexMgr = gc->psSharedState->psTextureManager;
-	GLES2Ghost *psGhost;
-
-	psGhost = GLES2Calloc(gc, sizeof(GLES2Ghost));
-
-	if(!psGhost)
-	{
-		return IMG_FALSE;
-	}
-
+    GLES2TextureManager *psTexMgr = gc->psSharedState->psTextureManager;
 	if (psTex->ui32NumRenderTargets)
 	{
 		IMG_UINT ui32MipLevel;
@@ -948,7 +939,17 @@ IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(GLES2Context *gc, GLES2Texture *psTex)
 
 	KRM_GhostResource(&psTexMgr->sKRM, &psTex->sResource, &psGhost->sResource);
 
-	return IMG_TRUE;
+
+}
+
+IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(GLES2Context *gc, GLES2Texture *psTex)
+{
+    GLES2Ghost *ghost;
+    SWTextureWait(gc, psTex);
+    ghost = GLES2Calloc(gc, sizeof(*ghost));
+    if(!ghost) { SetError(gc, GL_OUT_OF_MEMORY); return IMG_FALSE; }
+    GhostTextureStorage(gc, psTex, ghost);
+    return IMG_TRUE;
 }
 
 /***********************************************************************************
@@ -1204,7 +1205,8 @@ IMG_INTERNAL IMG_BOOL TextureMakeResident(GLES2Context *gc, GLES2Texture *psTex)
 		{
 			sMemInfo = *psTex->psMemInfo;
 			
-			TexMgrGhostTexture(gc, psTex);
+			if(!TexMgrGhostTexture(gc, psTex))
+            { PVRSRVUnlockMutex(gc->psSharedState->hTertiaryLock); return IMG_FALSE; }
 		}
 	}					
 
@@ -1380,7 +1382,7 @@ IMG_INTERNAL IMG_BOOL UnloadInconsistentTexture(GLES2Context *gc, GLES2Texture *
 	/* If the texture is live we must ghost it */
 	if(KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &(psTex->sResource)))
 	{
-		TexMgrGhostTexture(gc, psTex);
+		if(!TexMgrGhostTexture(gc, psTex)) return IMG_FALSE;
 	}
 	else
 	{
@@ -2644,6 +2646,11 @@ IMG_INTERNAL GLES2Texture *CreateTexture(GLES2Context *gc, IMG_UINT32 ui32Name,
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE_EXTERNAL)
 	psTex->psExtTexState = (GLES2ExternalTexState *) GLES2Calloc(gc, sizeof(GLES2ExternalTexState));
+	if(!psTex->psExtTexState)
+	{
+		GLES2Free(IMG_NULL, psTex);
+		return IMG_NULL;
+	}
 #endif
 
 	psParams = &psTex->sState;
@@ -2704,6 +2711,9 @@ IMG_INTERNAL GLES2Texture *CreateTexture(GLES2Context *gc, IMG_UINT32 ui32Name,
 
 	if(psTex->psMipLevel == IMG_NULL)
 	{
+#if defined(GLES2_EXTENSION_EGL_IMAGE_EXTERNAL)
+		GLES2Free(IMG_NULL, psTex->psExtTexState);
+#endif
 		GLES2Free(IMG_NULL, psTex);
 		return IMG_NULL;
 	}
@@ -2748,6 +2758,17 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	}
 
 	FlushUnflushedTextureRenders(gc, psTex);
+    /* Deletion must not need a fresh allocation to retain in-flight storage. */
+    if(KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
+    {
+        psTex->sDeletionGhost.psOwner = psTex;
+        psTex->sDeletionGhost.sResource.ui32Waiters = 1;
+        GhostTextureStorage(gc, psTex, &psTex->sDeletionGhost);
+#if defined(GLES2_EXTENSION_TEXTURE_STREAM)
+        psTex->psBufferDevice = IMG_NULL;
+#endif
+    }
+
 
 	for (i = 0; i < ui32MaxLevel; i++)
 	{
@@ -2769,69 +2790,22 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	psTex->psMipLevel = IMG_NULL;
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
-	if(psTex->psEGLImageSource || psTex->psEGLImageTarget)
-	{
-		/* If the texture was live we must ghost it */
-		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
-		{
-			TexMgrGhostTexture(gc, psTex);
-		}
-		else
-		{
-			if(psTex->psEGLImageSource)
-			{
-				KEGLUnbindImage(psTex->psEGLImageSource->hImage);
-			}
-			else
-			{
-				KEGLUnbindImage(psTex->psEGLImageTarget->hImage);
-			}
-		}
-	}
-	else
-#endif /*defined(GLES2_EXTENSION_EGL_IMAGE) */
-#if defined(GLES2_EXTENSION_TEXTURE_STREAM)
-	if(psTex->ui32TextureTarget == GLES2_TEXTURE_TARGET_STREAM)
-	{
-	    if (psTex->psBufferDevice)
-		{
-			/* If the texture was live, it must be ghosted */
-			if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource))
-			{
-				psTex->psBufferDevice->bGhosted = IMG_TRUE;
-
-				TexMgrGhostTexture(gc, psTex);
-			}
-			else
-			{
-				TexStreamUnbindBufferDevice(gc, (IMG_VOID *)psTex->psBufferDevice);
-			}
-		}
-	}	
+    if(psTex->psEGLImageSource || psTex->psEGLImageTarget)
+        KEGLUnbindImage(psTex->psEGLImageSource ? psTex->psEGLImageSource->hImage : psTex->psEGLImageTarget->hImage);
     else
-#endif /* defined(GLES2_EXTENSION_TEXTURE_STREAM) */
-	if (psTex->psMemInfo)
-	{
-		/* If the texture was live we must ghost it */
-		if (KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &(psTex->sResource)))
-		{
-			/* FIXME: This doesn't make much sense in the case we are shutting down */
-			TexMgrGhostTexture(gc, psTex);
-            //[LGE_UPDATE_S] jeonghoon.cho@lge.com Fix clock widget memory leak issue as blocking drawing texture in invisible area.
-			FlushAllUnflushedFBO(gc, IMG_FALSE);
-            //[LGE_UPDATE_E] jeonghoon.cho@lge.com
-		}
-		else
-		{
-#if (defined(DEBUG) || defined(TIMING))
-			ui32TextureMemCurrent -= psTex->psMemInfo->uAllocSize;
 #endif
-			GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
-
-			psTex->psMemInfo = IMG_NULL;
-		}
-	}
-
+#if defined(GLES2_EXTENSION_TEXTURE_STREAM)
+    if(psTex->psBufferDevice) TexStreamUnbindBufferDevice(gc, (IMG_VOID *)psTex->psBufferDevice);
+    else
+#endif
+    if(psTex->psMemInfo)
+    {
+#if defined(DEBUG) || defined(TIMING)
+        ui32TextureMemCurrent -= psTex->psMemInfo->uAllocSize;
+#endif
+        GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
+        psTex->psMemInfo = IMG_NULL;
+    }
 
 	KRM_RemoveResourceFromAllLists(&gc->psSharedState->psTextureManager->sKRM, &psTex->sResource);
 
@@ -2840,7 +2814,13 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	GLES2Free(IMG_NULL, psTex->psExtTexState);
 #endif
 
-	GLES2Free(IMG_NULL, psTex);
+	if(psTex->sDeletionGhost.psOwner)
+    {
+        PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
+        psTex->sDeletionGhost.sResource.ui32Waiters = 0;
+        PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
+    }
+    else GLES2Free(IMG_NULL, psTex);
 }
 
 /***********************************************************************************

@@ -96,6 +96,89 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         buffer.push('\n');
     }
     fs::write(output.join("buffer_storage_functions.inc"), buffer).map_err(|e| e.to_string())?;
+    for (name, file, markers) in [
+        (
+            "texture_lifetime",
+            "opengles2/texmgmt.c",
+            vec![
+                "static IMG_VOID DestroyTextureGhostKRM(",
+                "static IMG_VOID GhostTextureStorage(",
+                "IMG_INTERNAL IMG_BOOL TexMgrGhostTexture(",
+                "static IMG_VOID FreeTexture(",
+            ],
+        ),
+        (
+            "vao_lifetime",
+            "opengles2/vertexarrobj.c",
+            vec![
+                "static IMG_BOOL WaitUntilVAONotUsed(",
+                "static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2VertexArrayObject *psVAO)\n{",
+                "IMG_INTERNAL IMG_VOID DestroyVAOGhostKRM(",
+                "static IMG_VOID FreeVertexArrayObject(",
+                "GL_API_EXT void GL_APIENTRY glBindVertexArrayOES(",
+                "GL_API_EXT void GL_APIENTRY glDeleteVertexArraysOES(",
+            ],
+        ),
+        (
+            "draw_bounds",
+            "opengles2/drawvarray.c",
+            vec![
+                "static IMG_BOOL ValidateIndexBufferRange(",
+                "static IMG_BOOL DetermineMinAndMaxIndices(",
+                "static const IMG_UINT16* TransformIndicesTo16Bits(",
+                "static IMG_BOOL AddMultiDrawCount(",
+                "GL_API_EXT void GL_APIENTRY glMultiDrawArraysEXT(",
+                "GL_API_EXT void GL_APIENTRY glMultiDrawElementsEXT(",
+            ],
+        ),
+        (
+            "binary_bounds",
+            "opengles2/binshader.c",
+            vec![
+                "static IMG_VOID* SGXBS_Calloc(",
+                "static void SGXBS_FreeAllocatedMemory(",
+                "static SGXBS_Error ReadString(",
+                "static IMG_UINT8 ReadU8(",
+                "static IMG_UINT16 ReadU16(",
+                "static IMG_UINT32 ReadU32(",
+                "static IMG_FLOAT ReadFloat(",
+                "static IMG_UINT16 ReadArrayHeader(",
+                "static SGXBS_Error UnpackSymbolBindings(",
+            ],
+        ),
+        (
+            "texture_dependencies",
+            "opengles2/drawvarray.c",
+            vec![
+                "static IMG_BOOL AttachTextureDependency(",
+                "static IMG_BOOL AttachUsedTexturesToCurrentSurface(",
+                "static IMG_BOOL AttachAllUsedResourcesToCurrentSurface(",
+            ],
+        ),
+        (
+            "swap_failures",
+            "../gpu_es4_ext/eurasia/services4/srvclient/bridged/bridged_pvr_dc_glue.c",
+            vec![
+                "static IMG_INT32 _dcSwapChainThread(",
+                "PVRSRV_ERROR IMG_CALLCONV PVRSRVSwapToDCBuffer(",
+            ],
+        ),
+    ] {
+        let body = fs::read_to_string(source.join(file))
+            .map_err(|e| e.to_string())?
+            .replace("\r\n", "\n");
+        let mut extracted = String::new();
+        for marker in markers {
+            let start = body
+                .find(marker)
+                .ok_or_else(|| format!("missing {marker}"))?;
+            let end = start + body[start..].find("\n}").ok_or("unterminated function")? + 2;
+            extracted.push_str(&body[start..end]);
+            extracted.push('\n');
+        }
+        fs::write(output.join(format!("{name}_functions.inc")), extracted)
+            .map_err(|e| e.to_string())?;
+    }
     for name in [
         "texture_region",
         "state_cache",
@@ -104,6 +187,12 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "resource_wait",
         "buffer_storage",
         "heap_layout",
+        "texture_lifetime",
+        "vao_lifetime",
+        "draw_bounds",
+        "binary_bounds",
+        "swap_failures",
+        "texture_dependencies",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         run(Command::new(compiler)

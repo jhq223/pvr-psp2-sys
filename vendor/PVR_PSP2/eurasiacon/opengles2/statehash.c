@@ -216,7 +216,7 @@ IMG_INTERNAL IMG_BOOL HashTableSearch(GLES2Context *gc,
  Description        : Insert 'ui32Item' into the hash table 'psHashTable',
 					  using the hash value 'tHashValue'
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID HashTableInsert(GLES2Context *gc,
+IMG_INTERNAL IMG_BOOL HashTableInsert(GLES2Context *gc,
 									  HashTable	  *psHashTable,
 									  HashValue	  tHashValue,
 									  IMG_UINT32  *pui32HashKey,
@@ -232,6 +232,7 @@ IMG_INTERNAL IMG_VOID HashTableInsert(GLES2Context *gc,
 
 	/* Create the new entry */
 	psNewHashEntry = (HashEntry *)GLES2Malloc(gc, sizeof(HashEntry));
+	if(!psNewHashEntry) return IMG_FALSE;
 
 	psNewHashEntry->tHashValue = tHashValue;
 	psNewHashEntry->pui32HashKey = pui32HashKey;
@@ -257,6 +258,7 @@ IMG_INTERNAL IMG_VOID HashTableInsert(GLES2Context *gc,
                         oldest->pui32HashKey, oldest->ui32HashKeySizeInDWords, &unused);
     }
 
+	return IMG_TRUE;
 }
 
 
@@ -346,4 +348,3 @@ IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, 
 	
 	return bFound;
 }
-

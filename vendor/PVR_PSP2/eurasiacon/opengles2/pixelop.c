@@ -546,8 +546,8 @@ bad_op:
 IMG_INTERNAL IMG_BOOL ClipReadPixels(GLES2PixelSpanInfo *psSpanInfo, EGLDrawableParams *psReadParams)
 {
 	IMG_UINT32 ui32SkipPixels, ui32SkipRows, ui32Width, ui32Height;
-	IMG_INT32 i32ClipLeft, i32ClipRight, i32ClipTop, i32ClipBottom;
-	IMG_INT32 i32X1, i32Y1, i32X2, i32Y2, i32Temp;
+	IMG_INT64 i32ClipLeft, i32ClipRight, i32ClipTop, i32ClipBottom;
+	IMG_INT64 i32X1, i32Y1, i32X2, i32Y2, i32Temp;
 
 	i32ClipLeft = 0;
 	i32ClipRight = (IMG_INT32)psReadParams->ui32Width;
@@ -924,14 +924,14 @@ GL_APICALL void GL_APIENTRY glReadPixels(GLint x, GLint y, GLsizei width, GLsize
 		return;
 	}
 
-	if(!width || !height)
+	if(!CheckReadPixelArgs(gc, width, height, format, type, &pfnSpanPack))
 	{
 		GLES2_TIME_STOP(GLES2_TIMES_glReadPixels);
 
 		return;
 	}
 
-	if(!CheckReadPixelArgs(gc, width, height, format, type, &pfnSpanPack))
+	if(!width || !height)
 	{
 		GLES2_TIME_STOP(GLES2_TIMES_glReadPixels);
 

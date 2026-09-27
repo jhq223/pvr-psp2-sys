@@ -66,7 +66,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	}
 
 	//J サイズ0および負数はエラーにします。
-	if (((int)heapblocksize) <= 0) {
+	if (heapblocksize == 0 || heapblocksize > 0x7FFFFFFFU - (256U * 1024U - 1U)) {
 		return (SCE_NULL);
 	}
 
@@ -89,6 +89,8 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 		heapblocksize = ALIGN(heapblocksize, 256 * 1024);
 		uid = sceKernelAllocMemBlock(name, SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, heapblocksize, SCE_NULL);
 		break;
+	default:
+		return SCE_NULL;
 	}
 
 	if (uid < 0) {
@@ -140,6 +142,12 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	hp->uid  = uid;
 	hp->size = heapblocksize - (unsigned int)((char *)(hp + 1) - (char *)head);
 	hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
+	if(!hp->msp) {
+		sceKernelDeleteLwMutex(&head->lwmtx);
+		PVRSRVUnmapMemoryFromGpu(psDevData, p, 0, IMG_FALSE);
+		sceKernelFreeMemBlock(uid);
+		return SCE_NULL;
+	}
 
 	head->magic = (SceUIntPtr)(head + 1);
 
@@ -207,6 +215,9 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 	void	*result;
 
 	head = (SceHeapWorkInternal *)heap;
+	/* Leave room for alignment, allocator metadata and kernel block rounding. */
+	if(!head || nbytes > 0x7FFFFFFFU - 4096U - SCE_HEAP_MSPACE_LINK_OVERHEAD - 256U * 1024U)
+		return SCE_NULL;
 
 #if defined(DEBUG)
 	sceClibPrintf("sceHeapAllocHeapMemoryWithOption:\n\nHeap type 0x%X\nAllocation size: 0x%X\n\n", head->memblockType, nbytes);
@@ -346,6 +357,16 @@ void	*sceHeapAllocHeapMemoryWithOption(void *heap, unsigned int nbytes, const Sc
 			hp->uid  = uid;
 			hp->size = hsize - sizeof(SceHeapMspaceLink);
 			hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
+			if(!hp->msp) {
+#if USE_HEAPINFO
+				head->info.hblks--;
+				head->info.arena -= hsize;
+#endif
+				PVRSRVUnmapMemoryFromGpu(st_psDevData, p, 0, IMG_FALSE);
+				sceKernelFreeMemBlock(uid);
+				sceKernelUnlockLwMutex(&head->lwmtx, 1);
+				return SCE_NULL;
+			}
 
 			//J 双方向リンクリストに追加します。
 			//E insert to double-linked linst
@@ -548,7 +569,7 @@ void *sceHeapReallocHeapMemoryWithOption(void *heap, void *ptr, unsigned int nby
 		sceKernelUnlockLwMutex(&head->lwmtx, 1);
 		return (SCE_NULL);
 	}
-	sceClibMemcpy(newptr, ptr, uiSize);
+	sceClibMemcpy(newptr, ptr, uiSize < nbytes ? uiSize : nbytes);
 	res = sceHeapFreeHeapMemory(heap, ptr);
 
 	sceKernelUnlockLwMutex(&head->lwmtx, 1);

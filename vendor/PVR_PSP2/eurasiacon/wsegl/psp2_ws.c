@@ -229,6 +229,15 @@ static WSEGLError WSEGL_CreatePixmapDrawable(WSEGLDisplayHandle hDisplay,
 {
 	IMG_UINT32 ui32MemSize;
 	PVRSRV_ERROR eError;
+	IMG_UINT32 alignment;
+	if(!hNativePixmap || !phDrawable || !eRotationAngle) return WSEGL_BAD_NATIVE_PIXMAP;
+	*phDrawable = IMG_NULL;
+	alignment = hNativePixmap->memType == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW ? 256U * 1024U :
+	    (hNativePixmap->memType == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_RW ||
+	     hNativePixmap->memType == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW) ? 1024U * 1024U : 4096U;
+	if(!hNativePixmap->sizeX || !hNativePixmap->sizeY ||
+	   hNativePixmap->sizeX > (0xFFFFFFFFU - (alignment - 1U)) / 4U / hNativePixmap->sizeY)
+		return WSEGL_BAD_NATIVE_PIXMAP;
 
 	if (hNativePixmap->memType == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW)
 		ui32MemSize = ALIGN(hNativePixmap->sizeX * hNativePixmap->sizeY * 4, 256 * 1024);
@@ -248,7 +257,13 @@ static WSEGLError WSEGL_CreatePixmapDrawable(WSEGLDisplayHandle hDisplay,
 		return WSEGL_OUT_OF_MEMORY;
 	}
 
-	sceKernelGetMemBlockBase(hNativePixmap->memUID, &hNativePixmap->memBase);
+	if(sceKernelGetMemBlockBase(hNativePixmap->memUID, &hNativePixmap->memBase) < 0)
+	{
+		sceKernelFreeMemBlock(hNativePixmap->memUID);
+		hNativePixmap->memUID = SCE_UID_INVALID_UID;
+		hNativePixmap->memBase = SCE_NULL;
+		return WSEGL_BAD_DRAWABLE;
+	}
 
 	eError = PVRSRVMapMemoryToGpu(
 		hNativePixmap->psDevData,
@@ -262,6 +277,8 @@ static WSEGLError WSEGL_CreatePixmapDrawable(WSEGLDisplayHandle hDisplay,
 	if (eError != PVRSRV_OK)
 	{
 		sceKernelFreeMemBlock(hNativePixmap->memUID);
+		hNativePixmap->memUID = SCE_UID_INVALID_UID;
+		hNativePixmap->memBase = SCE_NULL;
 		return WSEGL_BAD_DRAWABLE;
 	}
 

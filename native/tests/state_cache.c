@@ -12,7 +12,8 @@ typedef int IMG_BOOL;
 #define PVR_DPF(x) ((void)0)
 #define PVR_UNREFERENCED_PARAMETER(x) ((void)(x))
 #define GLES2Calloc(gc, size) calloc(1, size)
-#define GLES2Malloc(gc, size) malloc(size)
+static int fail_allocation;
+#define GLES2Malloc(gc, size) (fail_allocation ? NULL : malloc(size))
 #define GLES2Free(gc, ptr) free(ptr)
 typedef struct { unsigned ui32FrameNum; } GLES2Context;
 #include "statehash.h"
@@ -21,12 +22,16 @@ static unsigned destroyed[32];
 static void destroy(GLES2Context *gc, unsigned value) { assert(value < 32); ++destroyed[value]; }
 static void insert(GLES2Context *gc, HashTable *table, unsigned hash, unsigned words, unsigned value) {
     unsigned *key = calloc(words, sizeof(*key)); assert(key); key[0] = value;
-    HashTableInsert(gc, table, hash, key, words, value);
+    assert(HashTableInsert(gc, table, hash, key, words, value));
 }
 int main(void) {
     GLES2Context gc = {0}; HashTable table = {0}; unsigned key, item;
     assert(HashTableCreate(&gc, &table, 2, 3, destroy));
     insert(&gc, &table, 1, 1, 1); insert(&gc, &table, 2, 1, 2); insert(&gc, &table, 3, 1, 3);
+    key = 20; fail_allocation = 1;
+    assert(!HashTableInsert(&gc, &table, 0, &key, 1, 20));
+    assert(!destroyed[1] && !destroyed[2] && !destroyed[3]);
+    fail_allocation = 0;
     key = 1; assert(HashTableSearch(&gc, &table, 1, &key, 1, &item) && item == 1);
     insert(&gc, &table, 0, 1, 4); assert(destroyed[2] == 1 && !destroyed[1]);
     /* Same hash, different lengths must advance through the chain. */

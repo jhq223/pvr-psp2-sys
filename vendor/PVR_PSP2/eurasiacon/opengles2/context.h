@@ -106,6 +106,8 @@ typedef struct GLES2SurfaceFlushListTAG
 ******************************************************************************/
 typedef struct GLES2ContextSharedStateTAG
 {
+	/* Data storage must outlive every context using shared objects. */
+	IMG_PVOID pvUNCHeap, pvCDRAMHeap;
 	/* Reference count. Update only within a critical section. Init with one, free when one. */
 	IMG_UINT32           ui32RefCount;
 
@@ -381,9 +383,9 @@ __inline IMG_VOID GLES2Free(GLES2Context *gc, void *mem)
 
 	if (gc)
 	{
-		if (sceHeapFreeHeapMemory(gc->pvUNCHeap, mem) == SCE_HEAP_ERROR_INVALID_POINTER)
+		if (!gc->pvUNCHeap || sceHeapFreeHeapMemory(gc->pvUNCHeap, mem) == SCE_HEAP_ERROR_INVALID_POINTER)
 		{
-			if (sceHeapFreeHeapMemory(gc->pvCDRAMHeap, mem) == SCE_HEAP_ERROR_INVALID_POINTER)
+			if (!gc->pvCDRAMHeap || sceHeapFreeHeapMemory(gc->pvCDRAMHeap, mem) == SCE_HEAP_ERROR_INVALID_POINTER)
 			{
 				free(mem);
 			}
@@ -446,7 +448,13 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 
 	if (!(ui32Attribs & PVRSRV_MEM_NO_SYNCOBJ))
 	{
-		PVRSRVAllocSyncInfo(gc->ps3DDevData, &psMemInfo->psClientSyncInfo);
+		PVRSRV_ERROR error = PVRSRVAllocSyncInfo(gc->ps3DDevData, &psMemInfo->psClientSyncInfo);
+		if(error != PVRSRV_OK)
+		{
+			sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem);
+			GLES2Free(IMG_NULL, psMemInfo);
+			return error;
+		}
 	}
 	else
 	{
@@ -485,4 +493,3 @@ __inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_ME
 /******************************************************************************
  End of file (context.h)
 ******************************************************************************/
-

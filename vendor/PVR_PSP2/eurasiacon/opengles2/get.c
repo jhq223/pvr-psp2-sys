@@ -1646,7 +1646,8 @@ GL_APICALL void GL_APIENTRY glGetShaderSource (GLuint shader, GLsizei bufsize, G
 		goto StopTimeAndReturn;
 	}
 
-	if(source && bufsize > 1)
+	if(length) *length = 0;
+	if(source && bufsize > 0)
 	{
 		if(psShader->pszSource)
 		{
@@ -2714,6 +2715,5 @@ GL_APICALL void GL_APIENTRY glGetShaderPrecisionFormat(GLenum shadertype, GLenum
 		}
 	}
 }
-
 
 

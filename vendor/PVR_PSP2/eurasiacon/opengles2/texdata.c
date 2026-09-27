@@ -2895,24 +2895,31 @@ IMG_INTERNAL IMG_VOID CopyTextureData(GLES2Context           *gc,
 									  IMG_UINT32              ui32SrcOffsetInBytes,
 									  IMG_UINT32              ui32SizeInBytes)
 {
-	/***************** Two paths ********************/
+    if(!psDstTex->psMemInfo || !psSrcInfo ||
+       ui32DstOffsetInBytes > psDstTex->psMemInfo->uAllocSize ||
+       ui32SizeInBytes > psDstTex->psMemInfo->uAllocSize - ui32DstOffsetInBytes ||
+       ui32SrcOffsetInBytes > psSrcInfo->uAllocSize ||
+       ui32SizeInBytes > psSrcInfo->uAllocSize - ui32SrcOffsetInBytes)
+    { SetError(gc, GL_INVALID_VALUE); return; }
+    if(!ui32SizeInBytes) return;
+    /***************** Two paths ********************/
 
 	{
 		GLES_ASSERT(psDstTex->psMemInfo);
 
 		/* PATH 1: using DMAC */
-		if (psSrcInfo->uAllocSize > 6400)
+		if (ui32SizeInBytes > 6400)
 		{
 			sceDmacMemcpy((IMG_PVOID)((IMG_UINTPTR_T)(psDstTex->psMemInfo->pvLinAddr) + ui32DstOffsetInBytes),
 				(IMG_PVOID)((IMG_UINTPTR_T)psSrcInfo->pvLinAddr + ui32SrcOffsetInBytes),
-				psSrcInfo->uAllocSize);
+				ui32SizeInBytes);
 		}
 		/* PATH 2: using SW */
 		else
 		{
 			GLES2MemCopy((IMG_PVOID)((IMG_UINTPTR_T)(psDstTex->psMemInfo->pvLinAddr) + ui32DstOffsetInBytes),
 				(IMG_PVOID)((IMG_UINTPTR_T)psSrcInfo->pvLinAddr + ui32SrcOffsetInBytes),
-				psSrcInfo->uAllocSize);
+				ui32SizeInBytes);
 		}
 	}
 }

@@ -52,6 +52,7 @@ typedef struct SGXBS_BufferTAG
 	IMG_VOID     **apvAllocatedMemory;
 	IMG_UINT32   u32NumMemoryAllocations;
 	IMG_UINT32   u32MaxMemoryAllocations;
+	IMG_UINT32   u32AllocatedBytes;
 
 } SGXBS_Buffer;
 
@@ -486,7 +487,7 @@ static IMG_VOID* SGXBS_Calloc(IMG_UINT32 u32NumBytes, SGXBS_Buffer* psBuffer)
 	IMG_UINT32 u32NewMaxMemoryAllocations;
 	IMG_VOID   **apvNewBuffer;
 
-	if(!u32NumBytes)
+	if(!u32NumBytes || u32NumBytes > 64U * 1024U * 1024U - psBuffer->u32AllocatedBytes)
 	{
 		return IMG_NULL;
 	}
@@ -525,6 +526,7 @@ static IMG_VOID* SGXBS_Calloc(IMG_UINT32 u32NumBytes, SGXBS_Buffer* psBuffer)
 		psBuffer->apvAllocatedMemory[psBuffer->u32NumMemoryAllocations++] = pvNewAlloc;
 	}
 
+	if(pvNewAlloc) psBuffer->u32AllocatedBytes += u32NumBytes;
 	return pvNewAlloc;
 }
 
@@ -559,7 +561,8 @@ static SGXBS_Error ReadString(SGXBS_Buffer *psBuffer, IMG_CHAR **ppszString)
 	IMG_CHAR   cLastChar = 1;
 
 	/* Determine the length of the string */
-	while(cLastChar && psBuffer->u32CurrentPosition + ui32Length < psBuffer->u32BufferSizeInBytes)
+	while(cLastChar && psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+	      ui32Length < psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 	{
 		cLastChar = (IMG_CHAR)(psBuffer->pu8Buffer[psBuffer->u32CurrentPosition + ui32Length++]);
 	}
@@ -572,6 +575,7 @@ static SGXBS_Error ReadString(SGXBS_Buffer *psBuffer, IMG_CHAR **ppszString)
 			PVR_DPF((PVR_DBG_ERROR,"ReadString: Buffer overflow"));
 		}
 		psBuffer->bOverflow = IMG_TRUE;
+		return SGXBS_CORRUPT_BINARY_ERROR;
 	}
 	else
 	{
@@ -603,7 +607,7 @@ static IMG_UINT8 ReadU8(SGXBS_Buffer *psBuffer)
 {
 	IMG_UINT8 ui8Result = 0;
 
-	if(psBuffer->u32CurrentPosition + 1 <= psBuffer->u32BufferSizeInBytes)
+	if(psBuffer->u32CurrentPosition < psBuffer->u32BufferSizeInBytes)
 	{
 		/* The buffer won't overflow if the data is read */
 		ui8Result = psBuffer->pu8Buffer[psBuffer->u32CurrentPosition];
@@ -634,7 +638,8 @@ static IMG_UINT16 ReadU16(SGXBS_Buffer *psBuffer)
 {
 	IMG_UINT16 u16Result = 0;
 
-	if(psBuffer->u32CurrentPosition + 2 <= psBuffer->u32BufferSizeInBytes)
+	if(psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+	   2U <= psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 	{
 		/* The buffer won't overflow if the data is read */
 		u16Result = ((IMG_UINT16)psBuffer->pu8Buffer[psBuffer->u32CurrentPosition+0] << 8) |
@@ -666,7 +671,8 @@ static IMG_UINT32 ReadU32(SGXBS_Buffer *psBuffer)
 {
 	IMG_UINT32 u32Result = 0;
 
-	if(psBuffer->u32CurrentPosition + 4 <= psBuffer->u32BufferSizeInBytes)
+	if(psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+	   4U <= psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 	{
 		/* The buffer won't overflow if the data is read */
 		u32Result = ((IMG_UINT32)psBuffer->pu8Buffer[psBuffer->u32CurrentPosition+0] << 24) |
@@ -702,7 +708,8 @@ static IMG_FLOAT ReadFloat(SGXBS_Buffer *psBuffer)
 
 	u.f = 0;
 
-	if(psBuffer->u32CurrentPosition + 4 <= psBuffer->u32BufferSizeInBytes)
+	if(psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+	   4U <= psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 	{
 		/* The buffer won't overflow if the data is read */
 		u.u32 = ((IMG_UINT32)psBuffer->pu8Buffer[psBuffer->u32CurrentPosition+0] << 24) |
@@ -749,7 +756,7 @@ static IMG_UINT16 ReadArrayHeader(SGXBS_Buffer *psBuffer)
                       Increments the current buffer position appropriately.
 ************************************************************************************/
 static SGXBS_Error UnpackSymbolBindings(GLSLBindingSymbol *ppsSymbols[/* *pu32NumSymbols */],
-	IMG_UINT32 *pu32NumSymbols, SGXBS_Buffer *psBuffer)
+	IMG_UINT32 *pu32NumSymbols, SGXBS_Buffer *psBuffer, IMG_UINT32 depth)
 {
 	SGXBS_Error       eError;
 	GLSLBindingSymbol *psSymbols;
@@ -757,6 +764,10 @@ static SGXBS_Error UnpackSymbolBindings(GLSLBindingSymbol *ppsSymbols[/* *pu32Nu
 
 	/* Read the array header */
 	u32NumSymbols = ReadArrayHeader(psBuffer);
+	if(psBuffer->bOverflow || psBuffer->u32CurrentPosition > psBuffer->u32BufferSizeInBytes ||
+	   u32NumSymbols > (psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition) / 19U ||
+	   (u32NumSymbols && depth >= 32U))
+		return SGXBS_CORRUPT_BINARY_ERROR;
 
 	/* Alloc space for the symbols */
 	psSymbols = SGXBS_Calloc(sizeof(GLSLBindingSymbol)*u32NumSymbols, psBuffer);
@@ -812,9 +823,22 @@ static SGXBS_Error UnpackSymbolBindings(GLSLBindingSymbol *ppsSymbols[/* *pu32Nu
 
 		/* 12- u32CompUseMask */
 		psSymbols->sRegisterInfo.ui32CompUseMask = ReadU16(psBuffer);
+		if(psBuffer->bOverflow || psSymbols->eTypeSpecifier >= GLSLTS_NUM_TYPES ||
+		   psSymbols->eBIVariableID >= GLSLBV_NUM_BUILTINS_WITH_SPECIALS ||
+		   psSymbols->eTypeQualifier >= GLSLTQ_NUM ||
+		   psSymbols->ePrecisionQualifier > GLSLPRECQ_HIGH ||
+		   (psSymbols->eVaryingModifierFlags & ~GLSLVMOD_ALL) ||
+		   (psSymbols->sRegisterInfo.eRegType != 0 &&
+		    psSymbols->sRegisterInfo.eRegType != HWREG_FLOAT && psSymbols->sRegisterInfo.eRegType != HWREG_TEX) ||
+		   (psSymbols->sRegisterInfo.eRegType == HWREG_TEX && psSymbols->sRegisterInfo.u.uBaseComp >= GLES2_MAX_TEXTURE_UNITS) ||
+		   (psSymbols->eTypeSpecifier != GLSLTS_STRUCT &&
+		    (psSymbols->sRegisterInfo.uCompAllocCount > 16U ||
+		     (psSymbols->sRegisterInfo.ui32CompUseMask >> psSymbols->sRegisterInfo.uCompAllocCount))) ||
+		   psSymbols->iActiveArraySize > MAX(1, psSymbols->iDeclaredArraySize))
+			return SGXBS_CORRUPT_BINARY_ERROR;
 
 		/* 13- sBaseTypeMembersArray */
-		eError = UnpackSymbolBindings(&psSymbols->psBaseTypeMembers, &psSymbols->uNumBaseTypeMembers, psBuffer);	/* PRQA S 3670 */ /* Override QAC suggestion and use recursive call. */
+		eError = UnpackSymbolBindings(&psSymbols->psBaseTypeMembers, &psSymbols->uNumBaseTypeMembers, psBuffer, depth + 1);
 
 		if(eError != SGXBS_NO_ERROR)
 		{
@@ -899,7 +923,9 @@ static SGXBS_Error UnpackUniPatchInput(IMG_VOID **ppvUniPatchShader, IMG_VOID *p
 	*/
 	if(u32UniPatchSize)
 	{
-		if(psBuffer->u32CurrentPosition + u32UniPatchSize >= psBuffer->u32BufferSizeInBytes)
+		if(psBuffer->u32CurrentPosition > psBuffer->u32BufferSizeInBytes ||
+		   u32UniPatchSize > psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition ||
+		   u32UniPatchSize < sizeof(USP_PC_SHADER))
 		{
 			/* There is not enough space in the buffer for the unipatch header */
 			PVR_DPF((PVR_DBG_ERROR,"UnpackUniPatchInput: The UniPatch input data is too long. Corrupt binary!"));
@@ -907,11 +933,19 @@ static SGXBS_Error UnpackUniPatchInput(IMG_VOID **ppvUniPatchShader, IMG_VOID *p
 		}
 
 		psUniPatchInput = (USP_PC_SHADER*)((IMG_UINTPTR_T)(&psBuffer->pu8Buffer[psBuffer->u32CurrentPosition]));
+		/* Copy the header: the serialized byte stream need not be aligned. */
+		{
+			USP_PC_SHADER header;
+			memcpy(&header, psUniPatchInput, sizeof(header));
+			if(header.uId != USP_PC_SHADER_ID || header.uVersion != USP_PC_SHADER_VER ||
+			   header.uSize != u32UniPatchSize - sizeof(header))
+				return SGXBS_CORRUPT_BINARY_ERROR;
+		}
 
 		/* Skip the opaque UniPatch input data */
 		psBuffer->u32CurrentPosition += u32UniPatchSize;
 
-		GLES_ASSERT(psBuffer->u32CurrentPosition < psBuffer->u32BufferSizeInBytes);
+		GLES_ASSERT(psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes);
 
 		/* Feed it into UniPatch. If it dislikes it, return an error */
 		*ppvUniPatchShader = PVRUniPatchCreateShader(pvUniPatchContext, psUniPatchInput);
@@ -967,7 +1001,8 @@ static SGXBS_Error UnpackSharedShaderState(GLES2SharedShaderState **ppsSharedSta
 	 */
 	eProgramType = ReadU32(psBuffer);
 
-	if(((eProgramType == GLSLPT_FRAGMENT) && bExpectingVertexShader) ||
+	if((eProgramType != GLSLPT_FRAGMENT && eProgramType != GLSLPT_VERTEX) ||
+	   ((eProgramType == GLSLPT_FRAGMENT) && bExpectingVertexShader) ||
 	   ((eProgramType == GLSLPT_VERTEX) && !bExpectingVertexShader))
 	{
 		return SGXBS_INVALID_ARGUMENTS_ERROR;
@@ -1050,7 +1085,7 @@ static SGXBS_Error UnpackSharedShaderState(GLES2SharedShaderState **ppsSharedSta
 	/*
 	 * 8- Unpack the symbol bindings
 	 */
-	eError = UnpackSymbolBindings(&psSymbolList->psBindingSymbolEntries, &psSymbolList->uNumBindings, psBuffer);
+	eError = UnpackSymbolBindings(&psSymbolList->psBindingSymbolEntries, &psSymbolList->uNumBindings, psBuffer, 0);
 
 	if(eError != SGXBS_NO_ERROR)
 	{
@@ -1162,6 +1197,9 @@ static SGXBS_Error UnpackRevision(GLES2SharedShaderState **ppsSharedState, IMG_B
 		{
 			/* Skip the whole revision */
 			PVR_DPF((PVR_DBG_MESSAGE,"UnpackRevision: Skipping revision."));
+			if(psBuffer->bOverflow || psBuffer->u32CurrentPosition > psBuffer->u32BufferSizeInBytes ||
+			   u32RevisionSize > psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
+				return SGXBS_CORRUPT_BINARY_ERROR;
 			psBuffer->u32CurrentPosition += u32RevisionSize;
 		}
 	}
@@ -1170,7 +1208,8 @@ static SGXBS_Error UnpackRevision(GLES2SharedShaderState **ppsSharedState, IMG_B
 	if(bFoundRevision)
 	{
 		/* Check that the Revision is not longer than the actual binary */
-		if(psBuffer->u32CurrentPosition + u32RevisionSize <= psBuffer->u32BufferSizeInBytes)
+		if(!psBuffer->bOverflow && psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+		   u32RevisionSize <= psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 		{
 			/* Reset the end of the buffer to be safe from corrupt binaries and read the revision body. */
 			psBuffer->u32BufferSizeInBytes = psBuffer->u32CurrentPosition + u32RevisionSize;
@@ -1349,6 +1388,9 @@ static SGXBS_Error UnpackProgramBinary(GLES2SharedShaderState **ppsVertexState, 
 		{
 			/* Skip the whole revision */
 			PVR_DPF((PVR_DBG_MESSAGE,"UnpackProgramBinary: Skipping revision."));
+			if(psBuffer->bOverflow || psBuffer->u32CurrentPosition > psBuffer->u32BufferSizeInBytes ||
+			   u32RevisionSize > psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
+				return SGXBS_CORRUPT_BINARY_ERROR;
 			psBuffer->u32CurrentPosition += u32RevisionSize;
 		}
 	}
@@ -1357,7 +1399,8 @@ static SGXBS_Error UnpackProgramBinary(GLES2SharedShaderState **ppsVertexState, 
 	if(bFoundRevision)
 	{
 		/* Check that the Revision is not longer than the actual binary */
-		if(psBuffer->u32CurrentPosition + u32RevisionSize <= psBuffer->u32BufferSizeInBytes)
+		if(!psBuffer->bOverflow && psBuffer->u32CurrentPosition <= psBuffer->u32BufferSizeInBytes &&
+		   u32RevisionSize <= psBuffer->u32BufferSizeInBytes - psBuffer->u32CurrentPosition)
 		{
 			/* Reset the end of the buffer to be safe from corrupt binaries and read the revision body. */
 			psBuffer->u32BufferSizeInBytes = psBuffer->u32CurrentPosition + u32RevisionSize;
@@ -1440,6 +1483,7 @@ IMG_INTERNAL SGXBS_Error SGXBS_CreateSharedShaderState(	GLES2Context *gc,
 	sBuffer.bOverflow               = IMG_FALSE;
 	sBuffer.gc                      = gc;
 	sBuffer.u32NumMemoryAllocations = 0;
+	sBuffer.u32AllocatedBytes = 0;
 	sBuffer.u32MaxMemoryAllocations = SGXBS_DEFAULT_ALLOC_BUFFER_SIZE;
 	sBuffer.apvAllocatedMemory      = GLES2Malloc(gc, sBuffer.u32MaxMemoryAllocations*sizeof(IMG_VOID*));
 
@@ -1506,6 +1550,7 @@ IMG_INTERNAL SGXBS_Error SGXBS_CreateProgramState(GLES2Context *gc, const IMG_VO
 	sBuffer.bOverflow               = IMG_FALSE;
 	sBuffer.gc                      = gc;
 	sBuffer.u32NumMemoryAllocations = 0;
+	sBuffer.u32AllocatedBytes = 0;
 	sBuffer.u32MaxMemoryAllocations = SGXBS_DEFAULT_ALLOC_BUFFER_SIZE;
 	sBuffer.apvAllocatedMemory      = GLES2Malloc(gc, sBuffer.u32MaxMemoryAllocations*sizeof(IMG_VOID*));
 
@@ -1559,4 +1604,3 @@ IMG_INTERNAL SGXBS_Error SGXBS_CreateProgramState(GLES2Context *gc, const IMG_VO
 /******************************************************************************
  End of file (binshader.c)
 ******************************************************************************/
-
