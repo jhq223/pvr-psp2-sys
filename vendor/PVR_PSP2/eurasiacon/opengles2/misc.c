@@ -17,6 +17,7 @@
  * $Log: misc.c $
  *****************************************************************************/
 #include <string.h>
+#include <kernel.h>
 
 #include "context.h"
 
@@ -769,6 +770,15 @@ IMG_INTERNAL IMG_VOID SetErrorFileLine(GLES2Context *gc, GLenum code, const IMG_
 	if (!gc->i32Error) 
 	{
 		gc->i32Error = (IMG_INT32)code;
+		if(code == GL_OUT_OF_MEMORY)
+		{
+			/* Report the first failing driver operation without heap allocation.
+			 * Release builds otherwise discard its location before glGetError. */
+			const IMG_CHAR *pszBase = szFile, *p;
+			for(p = szFile; *p; ++p)
+				if(*p == '/' || *p == '\\') pszBase = p + 1;
+			sceClibPrintf("[PVR][OOM] %s:%d\n", pszBase, iLine);
+		}
 	}
 }
 
@@ -1176,4 +1186,3 @@ IMG_INTERNAL IMG_VOID ConvertData(IMG_UINT32 ui32FromType, const IMG_VOID *pvRaw
 /******************************************************************************
  End of file (misc.c)
 ******************************************************************************/
-

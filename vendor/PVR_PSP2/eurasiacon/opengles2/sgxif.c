@@ -752,14 +752,13 @@ static IMG_BOOL StartFrame(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, PVRSRV
 
 
 /***********************************************************************************
- Function Name      : PrepareToDraw
- Inputs             : gc, ui32ClearFlags, bTakeLock
+ Function Name      : PrepareTextureDependencies
+ Inputs             : gc
  Outputs            : -
  Returns            : -
- Description        : Called prior to primitive drawing. Sends required 
-					  clears/drawmasks. Starts a frame if appropriate.
+ Description        : Waits for CPU uploads and invalidates evicted sampler state.
 ************************************************************************************/
-IMG_INTERNAL IMG_BOOL PrepareToDraw(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, IMG_BOOL bTakeLock)
+static IMG_VOID PrepareTextureDependencies(GLES2Context *gc)
 {
     if(gc->sProgram.psCurrentProgram)
     {
@@ -772,11 +771,28 @@ IMG_INTERNAL IMG_BOOL PrepareToDraw(GLES2Context *gc, IMG_UINT32 *pui32ClearFlag
                 {
                     GLES2TextureSampler *sampler = &shader->asTextureSamplers[i];
                     if(sampler->ui8ImageUnit < GLES2_MAX_TEXTURE_UNITS && sampler->ui8SamplerTypeIndex < GLES2_TEXTURE_TARGET_MAX)
-                        SWTextureWait(gc, gc->sTexture.apsBoundTexture[sampler->ui8ImageUnit][sampler->ui8SamplerTypeIndex]);
+                    {
+                        GLES2Texture *texture = gc->sTexture.apsBoundTexture[sampler->ui8ImageUnit][sampler->ui8SamplerTypeIndex];
+                        SWTextureWait(gc, texture);
+                        /* An allocation in another context can evict a bound
+                         * texture without changing this context's GL state. */
+                        if(!texture->bResidence) gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
+                    }
                 }
         }
     }
+}
 
+/***********************************************************************************
+ Function Name      : PrepareToDraw
+ Inputs             : gc, ui32ClearFlags, bTakeLock
+ Outputs            : -
+ Returns            : -
+ Description        : Sends required clears/drawmasks. Starts a frame if appropriate.
+************************************************************************************/
+IMG_INTERNAL IMG_BOOL PrepareToDraw(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, IMG_BOOL bTakeLock)
+{
+    PrepareTextureDependencies(gc);
 	EGLDrawableParams *psDrawParams = gc->psDrawParams;
 	EGLDrawableParams sParams;
 	PVRSRV_MUTEX_HANDLE hSurfaceMutex = IMG_NULL;
@@ -2356,4 +2372,3 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 /******************************************************************************
  End of file (sgxif.c)
 ******************************************************************************/
-

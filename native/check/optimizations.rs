@@ -97,7 +97,39 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         buffer.push('\n');
     }
     fs::write(output.join("buffer_storage_functions.inc"), buffer).map_err(|e| e.to_string())?;
+    let mut validation = String::new();
+    for (file, marker) in [
+        (
+            "opengles2/texmgmt.c",
+            "static IMG_VOID ReclaimTextureMemKRM(",
+        ),
+        (
+            "opengles2/texmgmt.c",
+            "IMG_INTERNAL IMG_VOID SetupTextureState(",
+        ),
+        (
+            "opengles2/sgxif.c",
+            "static IMG_VOID PrepareTextureDependencies(",
+        ),
+    ] {
+        let body = fs::read_to_string(source.join(file))
+            .map_err(|e| e.to_string())?
+            .replace("\r\n", "\n");
+        let start = body
+            .find(marker)
+            .ok_or_else(|| format!("missing {marker}"))?;
+        let end = start + body[start..].find("\n}").ok_or("unterminated function")? + 2;
+        validation.push_str(&body[start..end]);
+        validation.push('\n');
+    }
+    fs::write(output.join("texture_validation_functions.inc"), validation)
+        .map_err(|e| e.to_string())?;
     for (name, file, markers) in [
+        (
+            "error_origin",
+            "opengles2/misc.c",
+            vec!["IMG_INTERNAL IMG_VOID SetErrorFileLine("],
+        ),
         (
             "texture_lifetime",
             "opengles2/texmgmt.c",
@@ -194,6 +226,8 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "binary_bounds",
         "swap_failures",
         "texture_dependencies",
+        "texture_validation",
+        "error_origin",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         run(Command::new(compiler)

@@ -159,11 +159,7 @@ typedef struct GLESAppHintsRec
 IMG_BOOL GetApplicationHints(GLESAppHints *psAppHints, EGLcontextMode *psMode);
 
 IMG_VOID SetErrorFileLine(GLES2Context *gc, GLenum code, const IMG_CHAR *szFile, int iLine);
-#if defined(DEBUG)
 #define SetError(gc, code) SetErrorFileLine(gc, code, __FILE__, __LINE__)
-#else
-#define SetError(gc, code) SetErrorFileLine(gc, code, "", 0)
-#endif
 
 IMG_UINT16 GLES2ConvertFloatToC10(IMG_FLOAT fValue);
 IMG_UINT16 GLES2ConvertFloatToF16(IMG_FLOAT fValue);

@@ -325,6 +325,8 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 		GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
 		psTex->psMemInfo  = IMG_NULL;
 		psTex->bResidence = IMG_FALSE;
+		/* Cached TAG/PDS state may still contain the evicted device address. */
+		gc->ui32DirtyState |= GLES2_DIRTYFLAG_TEXTURE_STATE;
 	}
 }
 
@@ -3323,6 +3325,36 @@ IMG_INTERNAL IMG_BOOL FreeTextureState(GLES2Context *gc)
 IMG_INTERNAL IMG_VOID SetupTextureState(GLES2Context *gc)
 {
 	IMG_UINT32 j;
+	GLES2Texture *apsPinned[GLES2_MAX_TEXTURE_UNITS * 2];
+	IMG_UINT32 ui32Pinned = 0;
+
+	/* A later sampler allocation can reclaim idle storage. Keep every input
+	 * alive until all TAG words have been built, including inputs used only by
+	 * the other shader stage. GPU attachments are installed after validation.
+	 * The KRM waiter count also prevents reclaim while its lock is dropped. */
+	PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
+	for(j = 0; j < 2; ++j)
+	{
+		GLES2ProgramShader *psShader = j ? &gc->sProgram.psCurrentProgram->sFragment
+			: &gc->sProgram.psCurrentProgram->sVertex;
+		IMG_UINT32 i;
+		for(i = 0; i < GLES2_MAX_TEXTURE_UNITS; ++i)
+		{
+			if(psShader->ui32SamplersActive & (1U << i))
+			{
+				const GLES2TextureSampler *psSampler = &psShader->asTextureSamplers[i];
+				IMG_UINT8 unit = psSampler->ui8ImageUnit;
+				if(GLES2_IS_PERM_TEXTURE_UNIT(unit) || GLES2_IS_GRAD_TEXTURE_UNIT(unit)) continue;
+				GLES_ASSERT(unit < GLES2_MAX_TEXTURE_UNITS);
+				GLES_ASSERT(psSampler->ui8SamplerTypeIndex < GLES2_TEXTURE_TARGET_MAX);
+				GLES2Texture *psTex = gc->sTexture.apsBoundTexture[unit][psSampler->ui8SamplerTypeIndex];
+				GLES_ASSERT(psTex);
+				++psTex->sResource.ui32Waiters;
+				apsPinned[ui32Pinned++] = psTex;
+			}
+		}
+	}
+	PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
 
 	for(j=0; j < 2; j++)
 	{
@@ -3688,6 +3720,15 @@ IMG_INTERNAL IMG_VOID SetupTextureState(GLES2Context *gc)
 			}
 		}
 	}
+
+	PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
+	while(ui32Pinned)
+	{
+		GLES2Texture *psTex = apsPinned[--ui32Pinned];
+		GLES_ASSERT(psTex->sResource.ui32Waiters);
+		--psTex->sResource.ui32Waiters;
+	}
+	PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
 }
 
 /******************************************************************************
