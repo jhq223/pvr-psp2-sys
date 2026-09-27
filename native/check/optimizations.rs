@@ -87,6 +87,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "IMG_INTERNAL IMG_VOID DestroyBufferObjectGhostKRM(",
         "static IMG_BOOL ReplaceBufferStorage(",
         "static IMG_VOID FreeBufferObject(",
+        "GL_APICALL void GL_APIENTRY glBufferData(",
     ] {
         let start = body
             .find(marker)

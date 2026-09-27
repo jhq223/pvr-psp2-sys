@@ -750,12 +750,14 @@ GL_APICALL void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size, const v
     KRM_DestroyUnneededGhosts(gc, &gc->psSharedState->sBufferObjectKRM);
     if(gc->psSharedState->ui32RefCount == 1 && psBufObj->psMemInfo && KRM_IsResourceNeeded(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource))
     {
-        if(!ReplaceBufferStorage(gc, psBufObj, size ? uAllocSize : 0, ui32AllocAlign))
-        { SetError(gc, GL_OUT_OF_MEMORY); GLES2_TIME_STOP(GLES2_TIMES_glBufferData); return; }
-        replaced = IMG_TRUE;
-        psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
-        gc->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
-        if(psVAO->psBoundElementBuffer == psBufObj) psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ELEMENT_BUFFER;
+        /* Orphaning is optional: under memory pressure, wait and reuse the old storage. */
+        if(ReplaceBufferStorage(gc, psBufObj, size ? uAllocSize : 0, ui32AllocAlign))
+        {
+            replaced = IMG_TRUE;
+            psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
+            gc->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ATTRIB_STREAM;
+            if(psVAO->psBoundElementBuffer == psBufObj) psVAO->ui32DirtyState |= GLES2_DIRTYFLAG_VAO_ELEMENT_BUFFER;
+        }
     }
 	/* if it already holds some data, free it first (unless it is the same size as the new request) */
 	if (psBufObj->psMemInfo && !replaced)
