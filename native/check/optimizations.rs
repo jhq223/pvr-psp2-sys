@@ -179,6 +179,16 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             ],
         ),
         (
+            "fbo_fragment_state",
+            "opengles2/fbo.c",
+            vec!["IMG_INTERNAL IMG_VOID ChangeDrawableParams("],
+        ),
+        (
+            "copy_transfer_order",
+            "opengles2/texdata.c",
+            vec!["IMG_INTERNAL IMG_BOOL HWTQTextureNormalBlit("],
+        ),
+        (
             "resource_consumers",
             "common/kickresource.c",
             vec!["IMG_INTERNAL IMG_BOOL KRM_FlushUnKickedResource("],
@@ -330,6 +340,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "uniform_lookup",
         "resource_wait",
         "resource_consumers",
+        "copy_transfer_order",
         "buffer_storage",
         "heap_layout",
         "heap_allocation",
@@ -347,6 +358,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "texture_validation",
         "texture_sync_reclaim",
         "fbo_surface_cache",
+        "fbo_fragment_state",
         "error_origin",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));

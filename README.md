@@ -2,6 +2,8 @@
 
 PS Vita 的 PVR2D、EGL 和 OpenGL ES 2.0 Rust 绑定，附带原生驱动构建工具。
 
+[更新记录](CHANGELOG.md)
+
 ## 添加依赖
 
 ```toml

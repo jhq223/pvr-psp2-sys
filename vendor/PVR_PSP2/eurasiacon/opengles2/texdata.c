@@ -1304,8 +1304,17 @@ IMG_INTERNAL IMG_BOOL HWTQTextureNormalBlit(GLES2Context      *gc,
 	if (sMemInfo.type == SCE_KERNEL_MEMBLOCK_TYPE_USER_RW)
 	{
 		PVR_DPF((PVR_DBG_WARNING, "HWTQTextureNormalBlit: Texture upload destination is cached memory. Performance will be negatively affected"));
-}
+	}
 #endif
+
+	/* A framebuffer switch may leave 3D sampler reads unsubmitted. Queue
+	 * those readers before the transfer's 3DTQ_SYNC fence can overwrite their
+	 * texture; only the surfaces using this destination need a kick. */
+	if(!KRM_FlushUnKickedResource(&gc->psSharedState->psTextureManager->sKRM,
+		&psDstTex->sResource, gc, KickUnFlushed_ScheduleTA))
+	{
+		return IMG_FALSE;
+	}
 
 	eResult = SGXQueueTransfer(&gc->psSysContext->s3D, gc->psSysContext->hTransferContext, psQueueTransfer);
     SWTextureTransferSubmitted(gc);

@@ -763,6 +763,12 @@ IMG_INTERNAL IMG_VOID ChangeDrawableParams(GLES2Context *gc,
 		/* Setup fragment buffer to current render surface */
 		gc->apsBuffers[CBUF_TYPE_PDS_FRAG_BUFFER] = &gc->psRenderSurface->sPDSBuffer;
 		gc->apsBuffers[CBUF_TYPE_USSE_FRAG_BUFFER] = &gc->psRenderSurface->sUSSEBuffer;
+
+		/* Fragment PDS programs and secondary attributes can live in the
+		 * previous surface's ring. Rebuild them in this surface even when
+		 * the GL program and uniforms have not changed. Otherwise a queued
+		 * draw can outlive the surface that owns its shader data. */
+		gc->ui32DirtyState |= GLES2_DIRTYFLAG_FP_STATE | GLES2_DIRTYFLAG_FRAGPROG_CONSTANTS;
 	}
 
 	bYFlip = (gc->psDrawParams->eRotationAngle == PVRSRV_FLIP_Y) ? IMG_TRUE : IMG_FALSE;
