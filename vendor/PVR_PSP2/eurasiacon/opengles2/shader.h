@@ -104,16 +104,6 @@ struct GLES2PDSCodeVariant_TAG
 };
 
 
-typedef struct GLES2PDSCodeVariantGhost_TAG
-{
-	UCH_UseCodeBlock	*psCodeBlock;
-
-	/* Next variant in the list of the USE variant ghost*/
-	struct GLES2PDSCodeVariantGhost_TAG *psNext;
-
-} GLES2PDSCodeVariantGhost;
-
-
 typedef struct GLES2ConstantRange_TAG
 {
 	IMG_UINT32 ui32Start;
@@ -261,29 +251,6 @@ struct GLES2USEShaderVariant_TAG
 	/* Number of elements in the list above. NOTE: it is not a contiguous array! */
 	IMG_UINT32 ui32NumPDSVariants;
 };
-
-
-typedef struct GLES2USEShaderVariantGhost_TAG
-{
-	/* USSE code variant ghosts are frame resources */
-	KRMResource       		sResource;
-
-	/* Code block used for the primary task */
-	UCH_UseCodeBlock        *psUSECodeBlock;
-
-	/* Secondary attributes upload task */
-	GLES2USESecondaryUploadTask *psSecondaryUploadTask;
-
-	/* Scratch memory */
-	GLES2ShaderScratchMem *psScratchMem;
-
-	/* Indexable temps memory */
-	GLES2ShaderIndexableTempsMem *psIndexableTempsMem;
-
-	/* Linked list of PDS variant ghosts */
-	GLES2PDSCodeVariantGhost *psPDSVariantGhost;
-
-} GLES2USEShaderVariantGhost;
 
 
 /* GLES2SharedShaderState represents a GL shader after it has been compiled successfully */
@@ -627,8 +594,8 @@ IMG_BOOL CreateProgramState(GLES2Context *gc);
 IMG_VOID FreeProgramState(GLES2Context *gc);
 
 IMG_VOID DestroyUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *psUSEVariant);
-IMG_VOID DestroyUSEShaderVariantGhost(GLES2Context *gc, GLES2USEShaderVariantGhost *psUSEVariantGhost);
 IMG_VOID DestroyVertexVariants(GLES2Context *gc, const IMG_VOID* pvAttachment, GLES2NamedItem *psNamedItem);
+IMG_BOOL CanDestroyHashedPDSVariant(GLES2Context *gc, IMG_UINT32 ui32Item);
 IMG_VOID DestroyHashedPDSVariant(GLES2Context *gc, IMG_UINT32 ui32Item);
 
 IMG_BOOL InitializeGLSLCompiler(GLES2Context *gc);

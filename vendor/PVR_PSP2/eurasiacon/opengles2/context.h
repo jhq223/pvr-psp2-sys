@@ -325,7 +325,7 @@ GLES2_MEMERROR SendDrawMaskForClear(GLES2Context *gc);
 GLES2_MEMERROR SendDrawMaskForPrimitive(GLES2Context *gc);
 GLES2_MEMERROR SendDrawMaskRect(GLES2Context *gc, EGLRect *psRect, IMG_BOOL bIsEnable);
 
-IMG_VOID WaitForTA(GLES2Context *gc);
+IMG_BOOL WaitForTA(GLES2Context *gc);
 
 #if defined(EGL_EXTENSION_KHR_IMAGE)
 extern IMG_EGLERROR GLESGetImageSource(EGLContextHandle hContext, IMG_UINT32 ui32Source, IMG_UINT32 ui32Name, IMG_UINT32 ui32Level, EGLImage *psEGLImage);

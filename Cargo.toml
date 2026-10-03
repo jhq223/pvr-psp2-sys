@@ -1,7 +1,7 @@
 [package]
 name = "pvr-psp2-sys"
 edition = "2024"
-version = "0.1.2"
+version = "0.1.3"
 rust-version = "1.95"
 description = "Raw PVR, EGL and OpenGL ES bindings and native driver build tools for PlayStation Vita"
 readme = "README.md"

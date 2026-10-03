@@ -46,19 +46,26 @@
  Returns            : -
  Description        : Waits for VDM control stream to finish.
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID WaitForTA(GLES2Context *gc)
+IMG_INTERNAL IMG_BOOL WaitForTA(GLES2Context *gc)
 {
 	volatile IMG_UINT32 *pui32ReadOffset = (IMG_UINT32*)gc->apsBuffers[CBUF_TYPE_VDM_CTRL_BUFFER]->psStatusUpdateMemInfo->pvLinAddr;
 	
 	GLES2_TIME_START(GLES2_TIMER_WAITING_FOR_TA_TIME);
 	
-	PVRSRVPollForValue(	gc->psSysContext->psConnection,
+	PVRSRV_ERROR eError = PVRSRVPollForValue(	gc->psSysContext->psConnection,
 						gc->psSysContext->sHWInfo.sMiscInfo.hOSGlobalEvent,
 						pui32ReadOffset,
 						gc->apsBuffers[CBUF_TYPE_VDM_CTRL_BUFFER]->ui32CommittedHWOffsetInBytes,
 						0xFFFFFFFF,
 						1000,
 						GLES2_DEFAULT_WAIT_RETRIES);
+
+	if(eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "WaitForTA: completion wait failed (%d)", eError));
+		GLES2_TIME_STOP(GLES2_TIMER_WAITING_FOR_TA_TIME);
+		return IMG_FALSE;
+	}
 
 #if defined(PDUMP)
 
@@ -88,6 +95,7 @@ IMG_INTERNAL IMG_VOID WaitForTA(GLES2Context *gc)
 
 
 	GLES2_TIME_STOP(GLES2_TIMER_WAITING_FOR_TA_TIME);
+	return IMG_TRUE;
 }
 
 /***********************************************************************************
@@ -97,9 +105,12 @@ IMG_INTERNAL IMG_VOID WaitForTA(GLES2Context *gc)
  Returns            : -
  Description        : Waits for the hardware to complete a render. 
 ************************************************************************************/
-static IMG_VOID WaitForRender(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *psRenderSurfaceSyncInfo)
+static IMG_BOOL WaitForRender(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *psRenderSurfaceSyncInfo)
 {
 	IMG_UINT32 ui32TriesLeft = GLES2_DEFAULT_WAIT_RETRIES;
+	IMG_UINT64 ui64Start = 0;
+	IMG_UINT64 ui64Budget = (IMG_UINT64)100000 * GLES2_DEFAULT_WAIT_RETRIES;
+	IMG_BOOL bStarted = IMG_FALSE;
 
 	GLES_ASSERT(psRenderSurfaceSyncInfo);
 
@@ -107,18 +118,29 @@ static IMG_VOID WaitForRender(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *psRende
 
 	while (SGX2DQueryBlitsComplete(&gc->psSysContext->s3D, psRenderSurfaceSyncInfo, IMG_FALSE) != PVRSRV_OK)
 	{
-		if(!ui32TriesLeft)
+		IMG_UINT64 ui64Elapsed;
+		IMG_UINT32 ui32Wait;
+
+		if(!bStarted)
+		{
+			ui64Start = sceKernelGetProcessTimeWide();
+			bStarted = IMG_TRUE;
+		}
+		ui64Elapsed = sceKernelGetProcessTimeWide() - ui64Start;
+
+		if(!ui32TriesLeft || ui64Elapsed >= ui64Budget)
 		{
 			PVR_DPF((PVR_DBG_ERROR, "WaitForRender: Timeout"));
 
 			GLES2_TIME_STOP(GLES2_TIMER_WAITING_FOR_3D_TIME);
 
-			return;
+			return IMG_FALSE;
 		}
 
-		if (sceGpuSignalWait(sceKernelGetTLSAddr(0x44), 100000) != SCE_OK)
+		ui32Wait = ui64Budget - ui64Elapsed < 100000 ?
+			(IMG_UINT32)(ui64Budget - ui64Elapsed) : 100000;
+		if (sceGpuSignalWait(sceKernelGetTLSAddr(0x44), ui32Wait) != SCE_OK)
 		{
-			PVR_DPF((PVR_DBG_MESSAGE, "WaitForRender: sceGpuSignalWait failed"));
 			ui32TriesLeft--;
 		}
 	}
@@ -136,6 +158,7 @@ static IMG_VOID WaitForRender(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *psRende
 #endif
 
 	GLES2_TIME_STOP(GLES2_TIMER_WAITING_FOR_3D_TIME);
+	return IMG_TRUE;
 }
 
 
@@ -2341,7 +2364,8 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 	if(ui32KickFlags & GLES2_SCHEDULE_HW_WAIT_FOR_TA)
 	{
 		/* Wait for the TA */
-		WaitForTA(gc);
+		if(!WaitForTA(gc))
+			return IMG_EGL_GENERIC_ERROR;
 	}
 
 	if(ui32KickFlags & GLES2_SCHEDULE_HW_WAIT_FOR_3D)
@@ -2355,18 +2379,21 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 			if(psRenderSurface == gc->sFrameBuffer.sDefaultFrameBuffer.sReadParams.psRenderSurface)
 			{
 				/* Wait for the 3D core */
-				WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sReadParams.psSyncInfo);
+				if(!WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sReadParams.psSyncInfo))
+					return IMG_EGL_GENERIC_ERROR;
 			}
 			else
 			{
 				/* Wait for the 3D core */
-				WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sDrawParams.psSyncInfo);
+				if(!WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sDrawParams.psSyncInfo))
+					return IMG_EGL_GENERIC_ERROR;
 			}
 		}
 		else
 		{
 			/* Wait for the 3D core */
-			WaitForRender(gc, psRenderSurface->psSyncInfo);
+			if(!WaitForRender(gc, psRenderSurface->psSyncInfo))
+				return IMG_EGL_GENERIC_ERROR;
 		}
 	}
 

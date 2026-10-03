@@ -179,6 +179,30 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             ],
         ),
         (
+            "fbo_bind",
+            "opengles2/fbo.c",
+            vec!["GL_APICALL void GL_APIENTRY glBindFramebuffer("],
+        ),
+        (
+            "gpu_wait",
+            "../gpu_es4_ext/eurasia/services4/srvclient/common/resources.c",
+            vec!["PVRSRV_ERROR PVRSRVPollForValue("],
+        ),
+        (
+            "gpu_terminate",
+            "opengles2/validate.c",
+            vec!["IMG_INTERNAL GLES2_MEMERROR OutputTerminateState("],
+        ),
+        (
+            "gpu_completion",
+            "opengles2/sgxif.c",
+            vec![
+                "IMG_INTERNAL IMG_BOOL WaitForTA(",
+                "static IMG_BOOL WaitForRender(",
+                "IMG_INTERNAL IMG_EGLERROR ScheduleTA(",
+            ],
+        ),
+        (
             "fbo_fragment_state",
             "opengles2/fbo.c",
             vec!["IMG_INTERNAL IMG_VOID ChangeDrawableParams("],
@@ -308,6 +332,33 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             ],
         ),
         (
+            "shader_retirement_krm",
+            "common/kickresource.c",
+            vec![
+                "static IMG_VOID ReclaimUnneededResourcesInList(",
+                "IMG_INTERNAL IMG_VOID KRM_RetireResource(",
+            ],
+        ),
+        (
+            "shader_lifetime",
+            "opengles2/shader.c",
+            vec![
+                "IMG_INTERNAL IMG_VOID DestroyHashedPDSVariant(",
+                "static IMG_VOID UnlinkUSEShaderVariant(",
+                "static IMG_VOID DetachUSEShaderPDSVariants(",
+                "static IMG_VOID FreeUSEShaderVariantStorage(",
+                "IMG_INTERNAL IMG_VOID DestroyUSECodeVariantGhostKRM(",
+                "static IMG_VOID GhostUSEShaderVariant(",
+                "static IMG_VOID FreeListOfFragmentUSEVariants(",
+                "IMG_INTERNAL IMG_VOID DestroyUSEShaderVariant(",
+            ],
+        ),
+        (
+            "shader_upload",
+            "opengles2/use.c",
+            vec!["static GLES2_MEMERROR SetupUSESecondaryUploadTask("],
+        ),
+        (
             "swap_failures",
             "../gpu_es4_ext/eurasia/services4/srvclient/bridged/bridged_pvr_dc_glue.c",
             vec![
@@ -335,6 +386,8 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "texture_region",
         "span_copy",
         "state_cache",
+        "shader_lifetime",
+        "shader_upload",
         "async_texture",
         "async_wait",
         "uniform_lookup",
@@ -359,6 +412,9 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "texture_sync_reclaim",
         "fbo_surface_cache",
         "fbo_fragment_state",
+        "fbo_bind",
+        "gpu_wait",
+        "gpu_terminate",
         "error_origin",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));

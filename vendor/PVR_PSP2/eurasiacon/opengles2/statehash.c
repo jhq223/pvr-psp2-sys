@@ -216,15 +216,33 @@ IMG_INTERNAL IMG_BOOL HashTableSearch(GLES2Context *gc,
  Description        : Insert 'ui32Item' into the hash table 'psHashTable',
 					  using the hash value 'tHashValue'
 ************************************************************************************/
+static HashEntry *HashFindEvictable(GLES2Context *gc, HashTable *table,
+                                  PFNCanDestroyHashItem canDestroy)
+{
+    HashEntry *entry;
+    for(entry=table->psLRUTail; entry; entry=entry->psLRUPrev)
+        if(!canDestroy || canDestroy(gc, entry->ui32Item)) return entry;
+    return IMG_NULL;
+}
+
+IMG_INTERNAL IMG_BOOL HashTableCanInsert(GLES2Context *gc, HashTable *table,
+                                         PFNCanDestroyHashItem canDestroy)
+{
+    if(!table->ui32MaxNumEntries) return IMG_FALSE;
+    return (table->ui32NumEntries < table->ui32MaxNumEntries ||
+            HashFindEvictable(gc, table, canDestroy) != IMG_NULL) ? IMG_TRUE : IMG_FALSE;
+}
+
 IMG_INTERNAL IMG_BOOL HashTableInsert(GLES2Context *gc,
 									  HashTable	  *psHashTable,
 									  HashValue	  tHashValue,
 									  IMG_UINT32  *pui32HashKey,
 									  IMG_UINT32  ui32HashKeySizeInDWords,
-									  IMG_UINT32  ui32Item)
+									  IMG_UINT32  ui32Item,
+                                      PFNCanDestroyHashItem canDestroy)
 {
 	IMG_UINT32	ui32TableIndex;
-	HashEntry  *psHashChain, *psNewHashEntry;
+	HashEntry  *psHashChain, *psNewHashEntry, *victim = IMG_NULL;
 
 	/* Find the hash chain to attach this entry to */
 	ui32TableIndex = tHashValue & psHashTable->ui32HashValueMask;
@@ -233,6 +251,18 @@ IMG_INTERNAL IMG_BOOL HashTableInsert(GLES2Context *gc,
 	/* Create the new entry */
 	psNewHashEntry = (HashEntry *)GLES2Malloc(gc, sizeof(HashEntry));
 	if(!psNewHashEntry) return IMG_FALSE;
+    if(!psHashTable->ui32MaxNumEntries) {
+        GLES2Free(IMG_NULL, psNewHashEntry);
+        return IMG_FALSE;
+    }
+    if(psHashTable->ui32NumEntries >= psHashTable->ui32MaxNumEntries) {
+        victim=HashFindEvictable(gc, psHashTable, canDestroy);
+        if(!victim) {
+            GLES2Free(IMG_NULL, psNewHashEntry);
+            return IMG_FALSE;
+        }
+    }
+
 
 	psNewHashEntry->tHashValue = tHashValue;
 	psNewHashEntry->pui32HashKey = pui32HashKey;
@@ -249,13 +279,10 @@ IMG_INTERNAL IMG_BOOL HashTableInsert(GLES2Context *gc,
 
 	psHashTable->ui32NumEntries++;
 
-    while(psHashTable->ui32NumEntries > psHashTable->ui32MaxNumEntries &&
-          psHashTable->psLRUTail != psNewHashEntry)
-    {
-        HashEntry *oldest = psHashTable->psLRUTail;
+    if(victim) {
         IMG_UINT32 unused;
-        HashTableDelete(gc, psHashTable, oldest->tHashValue,
-                        oldest->pui32HashKey, oldest->ui32HashKeySizeInDWords, &unused);
+        HashTableDelete(gc, psHashTable, victim->tHashValue,
+                        victim->pui32HashKey, victim->ui32HashKeySizeInDWords, &unused);
     }
 
 	return IMG_TRUE;
@@ -270,9 +297,9 @@ IMG_INTERNAL IMG_BOOL HashTableInsert(GLES2Context *gc,
  Description        : Delete the hash entry with the hash value 'tHashValue' from
 					  the table 'psHashTable'
 ************************************************************************************/
-IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, HashValue tHashValue,  
-									  IMG_UINT32 *pui32HashKey, IMG_UINT32 ui32HashKeySizeInDWords,
-									  IMG_UINT32 *pui32Item)
+static IMG_BOOL RemoveHashTableEntry(GLES2Context *gc, HashTable *psHashTable, HashValue tHashValue,
+                                     IMG_UINT32 *pui32HashKey, IMG_UINT32 ui32HashKeySizeInDWords,
+                                     IMG_UINT32 *pui32Item, IMG_BOOL bDestroyItem)
 {
 	IMG_UINT32	ui32TableIndex;
 	HashEntry  *psHashChain, *psPrevHashEntry;
@@ -316,7 +343,8 @@ IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, 
 					HashUnlinkLRU(psHashTable, psHashChain);
 
                     /* Call the destroy function for this item */
-					(psHashTable->pfnDestroyItemFunc)(gc, psHashChain->ui32Item);
+					if(bDestroyItem)
+                        (psHashTable->pfnDestroyItemFunc)(gc, psHashChain->ui32Item);
 
 					if(psHashChain->pui32HashKey)
 					{
@@ -347,4 +375,17 @@ IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *psHashTable, 
 	}
 	
 	return bFound;
+}
+
+IMG_INTERNAL IMG_BOOL HashTableDelete(GLES2Context *gc, HashTable *table, HashValue hash,
+                                     IMG_UINT32 *key, IMG_UINT32 words, IMG_UINT32 *item)
+{
+    return RemoveHashTableEntry(gc, table, hash, key, words, item, IMG_TRUE);
+}
+
+/* Remove cache metadata while the caller retains ownership of GPU code. */
+IMG_INTERNAL IMG_BOOL HashTableDetach(GLES2Context *gc, HashTable *table, HashValue hash,
+                                     IMG_UINT32 *key, IMG_UINT32 words, IMG_UINT32 *item)
+{
+    return RemoveHashTableEntry(gc, table, hash, key, words, item, IMG_FALSE);
 }

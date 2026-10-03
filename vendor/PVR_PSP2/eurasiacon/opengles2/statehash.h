@@ -45,6 +45,8 @@ typedef struct HashEntry_TAG
 
 typedef IMG_VOID (* PFNDestroyHashItem)(GLES2Context *gc, IMG_UINT32 ui32Item);
 
+typedef IMG_BOOL (* PFNCanDestroyHashItem)(GLES2Context *gc, IMG_UINT32 ui32Item);
+
 typedef struct HashTable_TAG
 {
 	IMG_UINT32	ui32NumEntries;			/* How many entries have been placed into table */
@@ -87,12 +89,16 @@ IMG_BOOL HashTableSearch(GLES2Context *gc,
 						IMG_UINT32	  ui32HashKeySizeInDWords,	
 						IMG_UINT32    *pui32Item);
 
+IMG_BOOL HashTableCanInsert(GLES2Context *gc, HashTable *table,
+                            PFNCanDestroyHashItem canDestroy);
+
 IMG_BOOL HashTableInsert(GLES2Context *gc,
 						HashTable	  *psHashTable,
 						HashValue	  tHashValue,
 						IMG_UINT32	  *pui32HashKey,
 						IMG_UINT32	  ui32HashKeySizeInDWords,
-						IMG_UINT32	  ui32Item);
+						IMG_UINT32	  ui32Item,
+                        PFNCanDestroyHashItem canDestroy);
 
 IMG_BOOL HashTableDelete(GLES2Context *gc,
 						HashTable	  *psHashTable,
@@ -100,4 +106,6 @@ IMG_BOOL HashTableDelete(GLES2Context *gc,
 						IMG_UINT32	  *pui32HashKey,
 						IMG_UINT32	  ui32HashKeySizeInDWords,
 						IMG_UINT32	  *pui32Item);
+IMG_BOOL HashTableDetach(GLES2Context *gc, HashTable *table, HashValue hash,
+                        IMG_UINT32 *key, IMG_UINT32 words, IMG_UINT32 *item);
 #endif

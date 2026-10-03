@@ -1548,14 +1548,31 @@ static IMG_VOID IMG_CALLCONV UniPatchDebugPrint(const IMG_CHAR* pszFormat, ...)
  Returns            : 
  Description        : 
 ************************************************************************************/
+IMG_INTERNAL IMG_BOOL CanDestroyHashedPDSVariant(GLES2Context *gc, IMG_UINT32 ui32Item)
+{
+    /* Cached PDS code is used by every pending render of its USE variant. */
+    GLES2PDSCodeVariant *variant = (GLES2PDSCodeVariant *)ui32Item;
+    return KRM_IsResourceNeeded(&gc->psSharedState->sUSEShaderVariantKRM,
+                                &variant->psUSEVariant->sResource) ? IMG_FALSE : IMG_TRUE;
+}
+
 IMG_INTERNAL IMG_VOID DestroyHashedPDSVariant(GLES2Context *gc, IMG_UINT32 ui32Item)
 {
 	GLES2PDSCodeVariant **ppsPDSVariantList, *psPDSVariant;
 	GLES2USEShaderVariant *psUSEVariant;
 
-	PVR_UNREFERENCED_PARAMETER(gc);
+	psPDSVariant = (GLES2PDSCodeVariant *)ui32Item;
+	psUSEVariant = psPDSVariant->psUSEVariant;
 
-	psUSEVariant = ((GLES2PDSCodeVariant *)ui32Item)->psUSEVariant;
+	/* Context teardown also removes cache metadata. Keep pending GPU code
+	 * on its USE variant until that variant can be reclaimed. */
+	if(KRM_IsResourceNeeded(&gc->psSharedState->sUSEShaderVariantKRM,
+	                        &psUSEVariant->sResource))
+	{
+		psPDSVariant->pui32HashCompare = IMG_NULL;
+		return;
+	}
+
 	ppsPDSVariantList = &psUSEVariant->psPDSVariant;
 
 	while(*ppsPDSVariantList)
@@ -1595,6 +1612,55 @@ IMG_INTERNAL IMG_VOID ReclaimUSEShaderVariantMemKRM(IMG_VOID *pvContext, KRMReso
 }
 
 
+/* Unlink CPU program state without freeing code that may still execute. */
+static IMG_VOID UnlinkUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *variant)
+{
+    GLES2USEShaderVariant **link = &variant->psProgramShader->psVariant;
+    while(*link && *link != variant) link = &(*link)->psNext;
+    GLES_ASSERT(*link == variant);
+    *link = variant->psNext;
+    variant->psNext = IMG_NULL;
+    variant->psProgramShader = IMG_NULL;
+    if(gc->sProgram.psCurrentVertexVariant == variant)
+        gc->sProgram.psCurrentVertexVariant = IMG_NULL;
+    if(gc->sProgram.psCurrentFragmentVariant == variant)
+        gc->sProgram.psCurrentFragmentVariant = IMG_NULL;
+}
+
+static IMG_VOID DetachUSEShaderPDSVariants(GLES2Context *gc, GLES2USEShaderVariant *variant)
+{
+    GLES2PDSCodeVariant *pds;
+    for(pds = variant->psPDSVariant; pds; pds = pds->psNext)
+    {
+        IMG_UINT32 item;
+        if(pds->pui32HashCompare &&
+           !HashTableDetach(gc, &gc->sProgram.sPDSFragmentVariantHashTable,
+                            pds->tHashValue, pds->pui32HashCompare,
+                            pds->ui32HashCompareSizeInDWords, &item))
+            PVR_DPF((PVR_DBG_ERROR, "PDS variant not found in hash table"));
+        pds->pui32HashCompare = IMG_NULL;
+    }
+}
+
+static IMG_VOID FreeUSEShaderVariantStorage(GLES2Context *gc, GLES2USEShaderVariant *variant)
+{
+    GLES2PDSCodeVariant *pds = variant->psPDSVariant;
+    if(variant->psPatchedShader)
+        PVRUniPatchDestroyHWShader(gc->sProgram.pvUniPatchContext, variant->psPatchedShader);
+    UCH_CodeHeapFree(variant->psCodeBlock);
+    USESecondaryUploadTaskDelRef(gc, variant->psSecondaryUploadTask);
+    ShaderScratchMemDelRef(gc, variant->psScratchMem);
+    ShaderIndexableTempsMemDelRef(gc, variant->psIndexableTempsMem);
+    while(pds)
+    {
+        GLES2PDSCodeVariant *next = pds->psNext;
+        UCH_CodeHeapFree(pds->psCodeBlock);
+        GLES2Free(IMG_NULL, pds);
+        pds = next;
+    }
+    GLES2Free(IMG_NULL, variant);
+}
+
 /***********************************************************************************
  Function Name      : DestroyUSECodeVariantGhostKRM
  Inputs             : gc, psResource
@@ -1604,12 +1670,9 @@ IMG_INTERNAL IMG_VOID ReclaimUSEShaderVariantMemKRM(IMG_VOID *pvContext, KRMReso
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyUSECodeVariantGhostKRM(IMG_VOID *pvContext, KRMResource *psResource)
 {
-	/* Note the tricky pointer arithmetic. It is necessary */
-	GLES2USEShaderVariantGhost *psUSEVariantGhost =
-		(GLES2USEShaderVariantGhost*)((IMG_UINTPTR_T)psResource -offsetof(GLES2USEShaderVariantGhost, sResource));
-	GLES2Context	 *gc = (GLES2Context *)pvContext;
-
-	DestroyUSEShaderVariantGhost(gc, psUSEVariantGhost);
+    GLES2USEShaderVariant *variant = (GLES2USEShaderVariant *)
+        ((IMG_UINTPTR_T)psResource - offsetof(GLES2USEShaderVariant, sResource));
+    FreeUSEShaderVariantStorage((GLES2Context *)pvContext, variant);
 }
 
 
@@ -1618,79 +1681,27 @@ IMG_INTERNAL IMG_VOID DestroyUSECodeVariantGhostKRM(IMG_VOID *pvContext, KRMReso
  Inputs             : gc, psUSEVariant
  Outputs            : -
  Returns            : -
- Description        : Ghosts a USSE shader variant and destroys the original.
+ Description        : Retires a fragment variant until its consuming frames complete.
 ************************************************************************************/
-static IMG_VOID GhostUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *psUSEVariant)
+static IMG_VOID GhostUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *variant)
 {
-	GLES2USEShaderVariantGhost *psUSEVariantGhost;
-	GLES2PDSCodeVariant        *psPDSVariant;
-	GLES2PDSCodeVariantGhost   *psPDSVariantGhost;
+    GLES_ASSERT(variant->psProgramShader && variant->psProgramShader->eProgramType == GLSLPT_FRAGMENT);
+    /* Completion may race CPU teardown in another shared context. */
+    PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
+    ++variant->sResource.ui32Waiters;
+    PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
+    KRM_RetireResource(&gc->psSharedState->sUSEShaderVariantKRM, &variant->sResource);
 
-	/* We only ghost fragment shaders. For vertex shaders we kick the TA and wait */
-	GLES_ASSERT(psUSEVariant->psProgramShader && psUSEVariant->psProgramShader->eProgramType == GLSLPT_FRAGMENT);
+    UnlinkUSEShaderVariant(gc, variant);
+    DetachUSEShaderPDSVariants(gc, variant);
 
-	psUSEVariantGhost = GLES2Calloc(gc, sizeof(GLES2USEShaderVariantGhost));
-
-	if(!psUSEVariantGhost)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "GhostUSEShaderVariant: Out of memory. Could not ghost USE variant at %p\n", psUSEVariant));
-
-		SetError(gc, GL_OUT_OF_MEMORY);
-
-		return;
-	}
-
-	/* Transfer ownership of the USE code block from the variant to the ghost */
-	psUSEVariantGhost->psUSECodeBlock  = psUSEVariant->psCodeBlock;
-	psUSEVariant->psCodeBlock          = IMG_NULL;
-
-	USESecondaryUploadTaskAddRef(gc, psUSEVariant->psSecondaryUploadTask);
-	psUSEVariantGhost->psSecondaryUploadTask = psUSEVariant->psSecondaryUploadTask;
-
-
-	psUSEVariantGhost->psScratchMem = psUSEVariant->psScratchMem;
-	ShaderScratchMemAddRef(gc, psUSEVariantGhost->psScratchMem);
-
-	psUSEVariantGhost->psIndexableTempsMem = psUSEVariant->psIndexableTempsMem;
-	ShaderIndexableTempsMemAddRef(gc, psUSEVariantGhost->psIndexableTempsMem);
-
-
-	psPDSVariant = psUSEVariant->psPDSVariant;
-
-	/* Transfer ownership of the PDS code blocks from the PDS variants to the PDS ghosts */
-	while(psPDSVariant)
-	{
-		psPDSVariantGhost = GLES2Calloc(gc, sizeof(GLES2PDSCodeVariantGhost));
-		
-		if(!psPDSVariantGhost)
-		{
-			DestroyUSEShaderVariantGhost(gc, psUSEVariantGhost);
-
-			PVR_DPF((PVR_DBG_ERROR, "GhostUSEShaderVariant: Out of memory. Could not ghost USE variant at %p\n", psUSEVariant));
-
-			SetError(gc, GL_OUT_OF_MEMORY);
-
-			return;
-		}
-
-		psPDSVariantGhost->psCodeBlock = psPDSVariant->psCodeBlock;
-		psPDSVariant->psCodeBlock = IMG_NULL;
-
-		/* Insert the PDS variant ghost at the front of the list */
-		psPDSVariantGhost->psNext = psUSEVariantGhost->psPDSVariantGhost;
-		psUSEVariantGhost->psPDSVariantGhost = psPDSVariantGhost;
-
-		psPDSVariant = psPDSVariant->psNext;
-	}
-
-	/* The creation of the ghost was successfull. Notify the KRM */
-	KRM_GhostResource(&gc->psSharedState->sUSEShaderVariantKRM, 
-							&psUSEVariant->sResource, &psUSEVariantGhost->sResource);
-
-	/* Finally, destroy the original */
-	DestroyUSEShaderVariant(gc, psUSEVariant);
-
-	return;
+    /* The patcher's CPU result is no longer needed; GPU code and its references
+     * remain in the original object until all consuming frames complete. */
+    PVRUniPatchDestroyHWShader(gc->sProgram.pvUniPatchContext, variant->psPatchedShader);
+    variant->psPatchedShader = IMG_NULL;
+    PVRSRVLockMutex(gc->psSharedState->hSecondaryLock);
+    --variant->sResource.ui32Waiters;
+    PVRSRVUnlockMutex(gc->psSharedState->hSecondaryLock);
 }
 
 
@@ -4944,109 +4955,13 @@ IMG_INTERNAL IMG_VOID FreeProgramState(GLES2Context *gc)
                       all of its memory.
  Limitations        : The variant MUST belong to a program shader.
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID DestroyUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *psUSEVariant)
+IMG_INTERNAL IMG_VOID DestroyUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *variant)
 {
-	/* *** FRAGMENT *** */
-	GLES2PDSCodeVariant   *psPDSVariant, *psPDSVariantNext;
-	GLES2USEShaderVariant *psList;
-	IMG_UINT32 ui32DummyItem;
-
-	/* Remove this variant from the program list */
-	psList = psUSEVariant->psProgramShader->psVariant;
-
-	if(psList == psUSEVariant)
-	{
-		/* The element was in the head of the list */
-		psUSEVariant->psProgramShader->psVariant = psList->psNext;
-	}
-	else
-	{
-		/* The element was in the body of the list */
-		while(psList)
-		{
-			if(psList->psNext == psUSEVariant)
-			{
-				psList->psNext = psUSEVariant->psNext;
-
-				break;
-			}
-
-			psList = psList->psNext;
-		}
-
-		/* Check that the psUSEVariant was found */
-		GLES_ASSERT(psList);
-	}
-
-	/* Remove the variant from the KRM list */
-	KRM_RemoveResourceFromAllLists(&gc->psSharedState->sUSEShaderVariantKRM, &psUSEVariant->sResource);
-
-	/* Once the lists are OK, destroy the variant */
-	PVRUniPatchDestroyHWShader(gc->sProgram.pvUniPatchContext, psUSEVariant->psPatchedShader);
-
-	UCH_CodeHeapFree(psUSEVariant->psCodeBlock);
-
-	USESecondaryUploadTaskDelRef(gc, psUSEVariant->psSecondaryUploadTask);
-
-	ShaderScratchMemDelRef(gc, psUSEVariant->psScratchMem);
-	ShaderIndexableTempsMemDelRef(gc, psUSEVariant->psIndexableTempsMem);
-
-	/* Note that vertex shaders do not have PDS variants */
-	psPDSVariant = psUSEVariant->psPDSVariant;
-
-	while(psPDSVariant)
-	{
-		psPDSVariantNext = psPDSVariant->psNext;
-
-		if(!HashTableDelete(gc, &gc->sProgram.sPDSFragmentVariantHashTable, psPDSVariant->tHashValue,  
-									  psPDSVariant->pui32HashCompare, psPDSVariant->ui32HashCompareSizeInDWords,
-									  &ui32DummyItem))
-		{
-			PVR_DPF((PVR_DBG_ERROR,"PDS Variant not found in hash table"));
-		}
-
-		psPDSVariant = psPDSVariantNext;
-	}
-
-	GLES2Free(IMG_NULL, psUSEVariant);
+    UnlinkUSEShaderVariant(gc, variant);
+    KRM_RemoveResourceFromAllLists(&gc->psSharedState->sUSEShaderVariantKRM, &variant->sResource);
+    DetachUSEShaderPDSVariants(gc, variant);
+    FreeUSEShaderVariantStorage(gc, variant);
 }
-
-
-/***********************************************************************************
- Function Name      : DestroyUSEShaderVariantGhost
- Inputs             : gc, psUSEVariant
- Outputs            : -
- Returns            : -
- Description        : Destroys the given variant ghost, freeing all of its memory.
-************************************************************************************/
-IMG_INTERNAL IMG_VOID DestroyUSEShaderVariantGhost(GLES2Context *gc, GLES2USEShaderVariantGhost *psUSEVariantGhost)
-{
-	GLES2PDSCodeVariantGhost *psPDSVariantGhost, *psPDSVariantGhostNext;
-
-	/* Free the code blocks */
-	UCH_CodeHeapFree(psUSEVariantGhost->psUSECodeBlock);
-	USESecondaryUploadTaskDelRef(gc, psUSEVariantGhost->psSecondaryUploadTask);
-
-	ShaderScratchMemDelRef(gc, psUSEVariantGhost->psScratchMem);
-	ShaderIndexableTempsMemDelRef(gc, psUSEVariantGhost->psIndexableTempsMem);
-
-	/* Free the PDS variants' ghosts */
-	psPDSVariantGhost = psUSEVariantGhost->psPDSVariantGhost;
-
-	while(psPDSVariantGhost)
-	{
-		psPDSVariantGhostNext = psPDSVariantGhost->psNext;
-
-		UCH_CodeHeapFree(psPDSVariantGhost->psCodeBlock);
-
-		GLES2Free(IMG_NULL, psPDSVariantGhost);
-
-		psPDSVariantGhost = psPDSVariantGhostNext;
-	}
-
-	GLES2Free(IMG_NULL, psUSEVariantGhost);
-}
-
 
 
 /******************************************************************************

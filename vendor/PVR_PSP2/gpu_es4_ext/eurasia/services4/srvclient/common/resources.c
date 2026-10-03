@@ -31,7 +31,13 @@ PVRSRV_ERROR PVRSRVPollForValue(const PVRSRV_CONNECTION *psConnection,
 	IMG_UINT32 ui32Waitus,
 	IMG_UINT32 ui32Tries)
 {
-	IMG_UINT32 uiStart;
+	IMG_UINT64 ui64Start, ui64Budget;
+
+	if ((*pui32LinMemAddr & ui32Mask) == ui32Value)
+		return PVRSRV_OK;
+
+	ui64Start = sceKernelGetProcessTimeWide();
+	ui64Budget = (IMG_UINT64)ui32Waitus * ui32Tries;
 
 	while ((*pui32LinMemAddr & ui32Mask) != ui32Value)
 	{
@@ -40,9 +46,24 @@ PVRSRV_ERROR PVRSRVPollForValue(const PVRSRV_CONNECTION *psConnection,
 			return PVRSRV_ERROR_TIMEOUT_POLLING_FOR_VALUE;
 		}
 
-		if (sceGpuSignalWait(sceKernelGetTLSAddr(0x44), ui32Waitus) != PVRSRV_OK)
+		IMG_UINT32 ui32Wait = ui32Waitus;
+
+		if (ui32Waitus)
 		{
-			PVR_DPF((PVR_DBG_MESSAGE, "PVRSRVPollForValue: PVRSRVEventObjectWait failed"));
+			IMG_UINT64 ui64Elapsed = sceKernelGetProcessTimeWide() - ui64Start;
+			if (ui64Elapsed >= ui64Budget)
+				return PVRSRV_ERROR_TIMEOUT_POLLING_FOR_VALUE;
+			if (ui64Budget - ui64Elapsed < ui32Wait)
+				ui32Wait = (IMG_UINT32)(ui64Budget - ui64Elapsed);
+		}
+
+		/* Signals can belong to other work; they do not extend the deadline. */
+		if (sceGpuSignalWait(sceKernelGetTLSAddr(0x44), ui32Wait) != PVRSRV_OK)
+		{
+			ui32Tries--;
+		}
+		else if (!ui32Waitus)
+		{
 			ui32Tries--;
 		}
 	}

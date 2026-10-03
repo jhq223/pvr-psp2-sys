@@ -674,25 +674,37 @@ static IMG_BOOL WaitUntilResourceIsNotNeeded(const KRMKickResourceManager *psMgr
 											 const KRMResource *psResource,
 											 const IMG_UINT32 ui32MaxRetries)
 {
-	IMG_UINT32 ui32TriesLeft;
+	IMG_UINT32 ui32TriesLeft = ui32MaxRetries;
+	IMG_UINT64 ui64Start = 0;
+	IMG_UINT64 ui64Budget = (IMG_UINT64)100000 * ui32MaxRetries;
+	IMG_BOOL bStarted = IMG_FALSE;
 
-	ui32TriesLeft = ui32MaxRetries;
     ++((KRMResource *)psResource)->ui32Waiters;
 
 	while(IsResourceNeeded(psMgr, psResource) && IsResourceKicked(psMgr, psResource))
 	{
-		if(!ui32TriesLeft)
+		IMG_UINT64 ui64Elapsed;
+		IMG_UINT32 ui32Wait;
+
+		if(!bStarted)
+		{
+			ui64Start = sceKernelGetProcessTimeWide();
+			bStarted = IMG_TRUE;
+		}
+		ui64Elapsed = sceKernelGetProcessTimeWide() - ui64Start;
+		if(!ui32TriesLeft || ui64Elapsed >= ui64Budget)
 		{
 			--((KRMResource *)psResource)->ui32Waiters;
             return IMG_FALSE;
 		}
+		ui32Wait = ui64Budget - ui64Elapsed < 100000 ?
+			(IMG_UINT32)(ui64Budget - ui64Elapsed) : 100000;
 
         KRM_EXIT_CRITICAL_SECTION(psMgr);
-        IMG_BOOL failed = sceGpuSignalWait(sceKernelGetTLSAddr(0x44), 100000) != PVRSRV_OK;
+        IMG_BOOL failed = sceGpuSignalWait(sceKernelGetTLSAddr(0x44), ui32Wait) != PVRSRV_OK;
         KRM_ENTER_CRITICAL_SECTION(psMgr);
         if(failed)
 		{
-			PVR_DPF((PVR_DBG_MESSAGE, "WaitUntilResourceIsNotNeeded: PVRSRVEventObjectWait failed"));
 			ui32TriesLeft--;
 		}
 	}

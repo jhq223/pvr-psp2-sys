@@ -336,7 +336,8 @@ IMG_INTERNAL GLES2_MEMERROR OutputTerminateState(GLES2Context *gc,
 		PDS_PIXEL_SHADER_SA_PROGRAM sSAProgram = {0};
 	
 		/* Ensure previous TA has finished */
-		WaitForTA(gc);
+		if(!WaitForTA(gc))
+			return GLES2_GPU_WAIT_ERROR;
 
 		pui32Buffer = pui32BufferBase = (IMG_UINT32 *)psTerminateState->psSAUpdatePDSMemInfo->pvLinAddr;
 
@@ -412,7 +413,8 @@ IMG_INTERNAL GLES2_MEMERROR OutputTerminateState(GLES2Context *gc,
 		pui32BufferBase = (IMG_UINT32 *)psTerminateState->psTerminatePDSMemInfo->pvLinAddr;
 		
 		/* Ensure previous TA has finished */
-		WaitForTA(gc);
+		if(!WaitForTA(gc))
+			return GLES2_GPU_WAIT_ERROR;
 
 		PDSPatchTerminateStateProgram(&sProgram, pui32BufferBase);
 
@@ -1068,7 +1070,9 @@ static GLES2_MEMERROR WritePDSPixelShaderProgram(GLES2Context *gc, IMG_BOOL *pbC
 		   PDS variants as the texture addresses are going to change the next time the texture is 
 		   ghosted, rendering the cached PDS code useless.
 		*/
-		if(!psTextureState->bSomeTexturesWereGhosted)
+		if(!psTextureState->bSomeTexturesWereGhosted &&
+           HashTableCanInsert(gc, &gc->sProgram.sPDSFragmentVariantHashTable,
+                              CanDestroyHashedPDSVariant))
 		{
 			psPDSVariant = GLES2Calloc(gc, sizeof(GLES2PDSCodeVariant));
 
@@ -1320,7 +1324,7 @@ static GLES2_MEMERROR WritePDSPixelShaderProgram(GLES2Context *gc, IMG_BOOL *pbC
 			if(!HashTableInsert(gc,
 							&gc->sProgram.sPDSFragmentVariantHashTable, tPDSVariantHash, 
 							pui32HashCompare, ui32HashCompareSizeInDWords, 
-							(IMG_UINT32)psPDSVariant))
+							(IMG_UINT32)psPDSVariant, CanDestroyHashedPDSVariant))
 			{
 				GLES2Free(IMG_NULL, pui32HashCompare);
 				UCH_CodeHeapFree(psPDSVariant->psCodeBlock);

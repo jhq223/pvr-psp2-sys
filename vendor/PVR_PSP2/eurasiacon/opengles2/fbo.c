@@ -3371,6 +3371,15 @@ GL_APICALL void GL_APIENTRY glBindFramebuffer(GLenum target, GLuint framebuffer)
 
 	psBoundFrameBuffer = gc->sFrameBuffer.psActiveFrameBuffer;
 
+	/* Compare objects after name lookup: a deleted name can be reused. */
+	if(psBoundFrameBuffer == psFrameBuffer)
+	{
+		if(framebuffer)
+			NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psFrameBuffer);
+		GLES2_TIME_STOP(GLES2_TIMES_glBindFramebuffer);
+		return;
+	}
+
 	if (psBoundFrameBuffer)
 	{
 		/* Kick the TA to improve performance and to terminate the list of geometry */
@@ -3423,6 +3432,12 @@ GL_APICALL void GL_APIENTRY glBindFramebuffer(GLenum target, GLuint framebuffer)
 			if(ScheduleTA(gc, gc->psRenderSurface, ui32KickFlags) != IMG_EGL_NO_ERROR)
 			{
 				PVR_DPF((PVR_DBG_ERROR,"glBindFramebuffer: ScheduleTA did not work properly"));
+				PVRSRVUnlockMutex(gc->psRenderSurface->hMutex);
+				if(framebuffer)
+					NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psFrameBuffer);
+				SetError(gc, GL_INVALID_OPERATION);
+				GLES2_TIME_STOP(GLES2_TIMES_glBindFramebuffer);
+				return;
 			}
 		}
 

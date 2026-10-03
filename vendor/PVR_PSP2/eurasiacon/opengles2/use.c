@@ -1715,6 +1715,7 @@ static GLES2_MEMERROR SetupUSESecondaryUploadTask(GLES2Context *gc, const USP_HW
 	if(!psSecondaryUploadTask)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "SetupUSESecondaryUploadTask: Out of host memory.\n"));
+		PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
 		return GLES2_HOST_MEM_ERROR;
 	}
 
@@ -1760,6 +1761,7 @@ static GLES2_MEMERROR SetupUSESecondaryUploadTask(GLES2Context *gc, const USP_HW
 		{
 			PVR_DPF((PVR_DBG_ERROR,"SetupUSESecondaryUploadTask: Out of USE memory!"));
 			GLES2Free(IMG_NULL, psSecondaryUploadTask);
+			PVRSRVUnlockMutex(gc->psSharedState->hPrimaryLock);
 			return bIsVertexShader? GLES2_TA_USECODE_ERROR : GLES2_3D_USECODE_ERROR;
 		}
 	}
