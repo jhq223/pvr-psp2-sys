@@ -1,7 +1,7 @@
 [package]
 name = "pvr-psp2-sys"
 edition = "2024"
-version = "0.1.1"
+version = "0.1.2"
 rust-version = "1.95"
 description = "Raw PVR, EGL and OpenGL ES bindings and native driver build tools for PlayStation Vita"
 readme = "README.md"
@@ -28,3 +28,7 @@ path = "native/tests/checks.rs"
 [lints.rust]
 unsafe_code = "allow"
 warnings = "deny"
+
+[[test]]
+name = "compiler_sync"
+path = "native/tests/compiler_sync.rs"

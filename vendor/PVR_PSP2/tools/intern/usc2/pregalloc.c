@@ -4818,6 +4818,21 @@ static PEDGE_LIST SetSyncStartEnd(PINTERMEDIATE_STATE psState, PCODEBLOCK psBloc
 				}
 				else if (EDGE_DEST(psEdges) == psBlock->psExtPostDom)
 				{
+					IMG_UINT32 uChild;
+					/*
+						An early exit can skip a region containing nested sync-end
+						points. Its confluence is outside this subtree, so the
+						sibling-confluence pass above cannot add the entry sync.
+					*/
+					for (uChild = 0; uChild < psBlock->uNumDomChildren; uChild++)
+					{
+						PCODEBLOCK psChild = psBlock->apsDomChildren[uChild];
+						if (psChild->bDomSync && psChild->bDomSyncEnd &&
+							!PostDominated(psState, psChild, psBlock))
+						{
+							psChild->bAddSyncAtStart = IMG_TRUE;
+						}
+					}
 					/*
 						A 'break' out of a non-loop (but compound) statement,
 						skipping later children. (Breaks out of loops are dealt
