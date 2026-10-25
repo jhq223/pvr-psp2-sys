@@ -7,18 +7,14 @@ use glow::HasContext;
 use std::prelude::v1::*;
 use std::{
     cell::Cell,
-    ffi::{CStr, CString},
     ops::Range,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
-use vitasdk_sys::*;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-const WIDTH: u32 = 960;
-const HEIGHT: u32 = 544;
 
-/// GPU command completion supplied by the maintained Vita driver.
+/// GPU command completion supplied by the active EGL driver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionMode {
     Fence,
@@ -28,10 +24,17 @@ pub enum CompletionMode {
 pub enum Error {
     Invalid(&'static str),
     Unsupported(&'static str),
+    Library {
+        library: &'static str,
+        message: String,
+    },
     Sdk(&'static str, i32),
     Egl(&'static str, i32),
     Gl(&'static str, u32),
-    Shader { stage: &'static str, log: String },
+    Shader {
+        stage: &'static str,
+        log: String,
+    },
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,84 +58,31 @@ pub struct Capabilities {
     pub shader_binary: bool,
     pub completion: CompletionMode,
 }
-struct Native {
-    display: EGLDisplay,
-    surface: EGLSurface,
-    context: EGLContext,
-    modules: Vec<i32>,
-}
-impl Native {
-    fn close(&mut self) -> Result<()> {
-        unsafe {
-            if !self.context.is_null() {
-                egl_ok(
-                    "eglMakeCurrent(close)",
-                    eglMakeCurrent(
-                        self.display,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                    ),
-                )?;
-                egl_ok(
-                    "eglDestroyContext",
-                    eglDestroyContext(self.display, self.context),
-                )?;
-                self.context = std::ptr::null_mut();
-            }
-            if !self.surface.is_null() {
-                egl_ok(
-                    "eglDestroySurface",
-                    eglDestroySurface(self.display, self.surface),
-                )?;
-                self.surface = std::ptr::null_mut();
-            }
-            if !self.display.is_null() {
-                egl_ok("eglTerminate", eglTerminate(self.display))?;
-                self.display = std::ptr::null_mut();
-            }
-            while let Some(&module) = self.modules.last() {
-                let mut status = 0;
-                let result = sceKernelStopUnloadModule(
-                    module,
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    &mut status,
-                );
-                if result < 0 {
-                    return Err(Error::Sdk("stop/unload PVR module", result));
-                }
-                if status < 0 {
-                    return Err(Error::Sdk("stop PVR module", status));
-                }
-                self.modules.pop();
-            }
-        }
-        ACTIVE.store(false, Ordering::Release);
-        Ok(())
-    }
-}
-impl Drop for Native {
-    fn drop(&mut self) {
-        if self.close().is_err() {
-            // Native Services may still reference both data and executable
-            // module code. Preserve those native owners through process exit.
-            std::mem::forget(std::mem::take(&mut self.modules));
-        }
-    }
-}
+#[cfg(target_os = "vita")]
+#[path = "graphics/native_vita.rs"]
+mod native;
+#[cfg(not(target_os = "vita"))]
+#[path = "graphics/native_desktop.rs"]
+mod native;
+use native::Native;
 
 type Sync = *mut core::ffi::c_void;
-type CreateSync = unsafe extern "C" fn(EGLDisplay, u32, *const i32) -> Sync;
-type DestroySync = unsafe extern "C" fn(EGLDisplay, Sync) -> u32;
-type WaitSync = unsafe extern "C" fn(EGLDisplay, Sync, i32, u64) -> i32;
+type CreateSync = unsafe extern "system" fn(EGLDisplay, u32, *const i32) -> Sync;
+type DestroySync = unsafe extern "system" fn(EGLDisplay, Sync) -> u32;
+type WaitSync = unsafe extern "system" fn(EGLDisplay, Sync, i32, u64) -> i32;
 #[derive(Clone, Copy)]
 struct FenceApi {
     create: CreateSync,
     destroy: DestroySync,
     wait: WaitSync,
+}
+/// Driver strings queried from the current OpenGL ES context.
+#[derive(Clone, Debug)]
+pub struct DriverInfo {
+    pub vendor: String,
+    pub renderer: String,
+    pub version: String,
+    pub shading_language: String,
 }
 struct Inner {
     gl: glow::Context,
@@ -161,7 +111,7 @@ impl Fence {
         match status {
             0x30f6 => Ok(true),
             0x30f5 => Ok(false),
-            _ => Err(egl_error("eglClientWaitSyncKHR")),
+            _ => Err(self.owner.native.error("eglClientWaitSyncKHR")),
         }
     }
 }
@@ -188,134 +138,25 @@ impl Drop for Inner {
 pub struct Context(Rc<Inner>);
 impl Context {
     /// Load matching PVR modules from a directory such as `app0:module`.
+    #[cfg(target_os = "vita")]
     pub fn new(module_directory: &str, vsync: bool) -> Result<Self> {
-        if ACTIVE
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(Error::Invalid("a PVR context is already alive"));
-        }
-        let mut native = Native {
-            display: std::ptr::null_mut(),
-            surface: std::ptr::null_mut(),
-            context: std::ptr::null_mut(),
-            modules: Vec::new(),
-        };
-        for path in [
-            "vs0:sys/external/libfios2.suprx",
-            "vs0:sys/external/libc.suprx",
-        ] {
-            let _ = load_module(path);
-        }
-        let path = |file: &str| std::format!("{}/{file}", module_directory.trim_end_matches('/'));
-        native
-            .modules
-            .push(load_module(&path("libgpu_es4_ext.suprx"))?);
-        native.modules.push(load_module(&path("libIMGEGL.suprx"))?);
-        let mut hint = PvrAppHint::default();
-        if unsafe { PVRSRVInitializeAppHint(&mut hint) } == 0 {
-            return Err(Error::Invalid("PVR defaults unavailable"));
-        }
-        set_path(&mut hint.window_system, &path("libpvrPSP2_WSEGL.suprx"))?;
-        set_path(&mut hint.gles2, &path("libGLESv2.suprx"))?;
-        hint.overload_tex_layout = PVR_TEXTURE_LAYOUT_STRIDE;
-        hint.flush_behaviour = PVR_FLUSH_KICK_3D;
-        hint.enable_memory_speed_test = 0;
-        if unsafe { PVRSRVCreateVirtualAppHint(&mut hint) } == 0 {
-            return Err(Error::Invalid("PVR hints rejected"));
-        }
-        unsafe {
-            native.display = eglGetDisplay(0);
-            if native.display.is_null() {
-                return Err(egl_error("eglGetDisplay"));
-            }
-            egl_ok(
-                "eglInitialize",
-                eglInitialize(native.display, std::ptr::null_mut(), std::ptr::null_mut()),
-            )?;
-            egl_ok("eglBindAPI", eglBindAPI(EGL_OPENGL_ES_API))?;
-            let attributes = [
-                EGL_RED_SIZE,
-                8,
-                EGL_GREEN_SIZE,
-                8,
-                EGL_BLUE_SIZE,
-                8,
-                EGL_ALPHA_SIZE,
-                8,
-                EGL_DEPTH_SIZE,
-                0,
-                EGL_STENCIL_SIZE,
-                0,
-                EGL_SURFACE_TYPE,
-                EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
-                EGL_RENDERABLE_TYPE,
-                EGL_OPENGL_ES2_BIT,
-                EGL_NONE,
-            ];
-            let mut config = std::ptr::null_mut();
-            let mut count = 0;
-            egl_ok(
-                "eglChooseConfig",
-                eglChooseConfig(
-                    native.display,
-                    attributes.as_ptr(),
-                    &mut config,
-                    1,
-                    &mut count,
-                ),
-            )?;
-            if count != 1 || config.is_null() {
-                return Err(Error::Invalid("no RGBA EGL configuration"));
-            }
-            native.surface = eglCreateWindowSurface(
-                native.display,
-                config,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            );
-            if native.surface.is_null() {
-                return Err(egl_error("eglCreateWindowSurface"));
-            }
-            native.context = eglCreateContext(
-                native.display,
-                config,
-                std::ptr::null_mut(),
-                [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE].as_ptr(),
-            );
-            if native.context.is_null() {
-                return Err(egl_error("eglCreateContext"));
-            }
-            egl_ok(
-                "eglMakeCurrent",
-                eglMakeCurrent(
-                    native.display,
-                    native.surface,
-                    native.surface,
-                    native.context,
-                ),
-            )?;
-            egl_ok(
-                "eglSwapInterval",
-                eglSwapInterval(native.display, i32::from(vsync)),
-            )?;
-        }
-        let gl = unsafe {
-            glow::Context::from_loader_function(|name| {
-                let name = CString::new(name).expect("GL entry name");
-                eglGetProcAddress(name.as_ptr())
-            })
-        };
-        let extensions = unsafe { eglQueryString(native.display, 0x3055) };
-        let has_fence = !extensions.is_null()
-            && unsafe { CStr::from_ptr(extensions) }
-                .to_bytes()
-                .split(|&v| v == b' ')
-                .any(|v| v == b"EGL_KHR_fence_sync");
+        Self::from_native(Native::new(module_directory, vsync)?, vsync)
+    }
+    /// Create a thread-bound desktop OpenGL ES context and an RGBA8 pbuffer.
+    /// The host EGL implementation must provide ES2 and EGL_KHR_fence_sync.
+    /// No native window is created. Pbuffer swap interval does not pace frames;
+    /// callers use submission fences to measure completed work.
+    #[cfg(not(target_os = "vita"))]
+    pub fn headless(size: [u32; 2], vsync: bool) -> Result<Self> {
+        Self::from_native(Native::headless(size, vsync)?, vsync)
+    }
+    fn from_native(native: Native, vsync: bool) -> Result<Self> {
+        let gl = unsafe { glow::Context::from_loader_function(|name| native.proc_address(name)) };
+        let has_fence = native.has_extension("EGL_KHR_fence_sync");
         let fences = if has_fence {
-            let create = unsafe { eglGetProcAddress(c"eglCreateSyncKHR".as_ptr()) };
-            let destroy = unsafe { eglGetProcAddress(c"eglDestroySyncKHR".as_ptr()) };
-            let wait = unsafe { eglGetProcAddress(c"eglClientWaitSyncKHR".as_ptr()) };
+            let create = native.proc_address("eglCreateSyncKHR");
+            let destroy = native.proc_address("eglDestroySyncKHR");
+            let wait = native.proc_address("eglClientWaitSyncKHR");
             if create.is_null() || destroy.is_null() || wait.is_null() {
                 return Err(Error::Unsupported("incomplete EGL fence entry points"));
             }
@@ -327,9 +168,7 @@ impl Context {
                 }
             }
         } else {
-            return Err(Error::Unsupported(
-                "EGL_KHR_fence_sync requires matching maintained driver modules",
-            ));
+            return Err(Error::Unsupported("EGL_KHR_fence_sync is required"));
         };
         let ext = gl.supported_extensions();
         let caps = unsafe {
@@ -341,7 +180,13 @@ impl Context {
                 max_fragment_uniform_vectors: gl
                     .get_parameter_i32(glow::MAX_FRAGMENT_UNIFORM_VECTORS)
                     .max(0) as u32,
-                bc: ext.contains("GL_KRKR_texture_compression_bc"),
+                bc: if cfg!(target_os = "vita") {
+                    ext.contains("GL_KRKR_texture_compression_bc")
+                } else {
+                    ext.contains("GL_EXT_texture_compression_s3tc")
+                        || (ext.contains("GL_EXT_texture_compression_dxt1")
+                            && ext.contains("GL_ANGLE_texture_compression_dxt5"))
+                },
                 bgra: ext.contains("GL_EXT_texture_format_BGRA8888")
                     || ext.contains("GL_IMG_texture_format_BGRA8888"),
                 half_float: ext.contains("GL_OES_texture_half_float")
@@ -381,9 +226,26 @@ impl Context {
     pub fn capabilities(&self) -> &Capabilities {
         &self.0.caps
     }
-    /// Physical display dimensions.
+    /// Physical window or pbuffer dimensions.
     pub fn output_size(&self) -> [u32; 2] {
-        [WIDTH, HEIGHT]
+        self.0.native.size()
+    }
+    /// Identify the actual driver used for capability and performance reports.
+    pub fn driver_info(&self) -> Result<DriverInfo> {
+        self.open()?;
+        let info = unsafe {
+            DriverInfo {
+                vendor: self.0.gl.get_parameter_string(glow::VENDOR),
+                renderer: self.0.gl.get_parameter_string(glow::RENDERER),
+                version: self.0.gl.get_parameter_string(glow::VERSION),
+                shading_language: self
+                    .0
+                    .gl
+                    .get_parameter_string(glow::SHADING_LANGUAGE_VERSION),
+            }
+        };
+        self.check("driver information")?;
+        Ok(info)
     }
     /// Currently accepted native swap interval.
     pub fn vsync(&self) -> bool {
@@ -391,18 +253,14 @@ impl Context {
     }
     pub fn set_vsync(&self, enabled: bool) -> Result<()> {
         self.open()?;
-        egl_ok("eglSwapInterval", unsafe {
-            eglSwapInterval(self.0.native.display, i32::from(enabled))
-        })?;
+        self.0.native.set_vsync(enabled)?;
         self.0.vsync.set(enabled);
         Ok(())
     }
     /// Native buffer exchange. It is independent of GPU completion accounting.
     pub fn present(&self) -> Result<()> {
         self.open()?;
-        egl_ok("eglSwapBuffers", unsafe {
-            eglSwapBuffers(self.0.native.display, self.0.native.surface)
-        })
+        self.0.native.present()
     }
     /// Insert a hardware fence for preceding graphics commands.
     pub fn fence(&self) -> Result<Fence> {
@@ -410,7 +268,7 @@ impl Context {
         let api = self.0.fences;
         let sync = unsafe { (api.create)(self.0.native.display, 0x30f9, [EGL_NONE].as_ptr()) };
         if sync.is_null() {
-            return Err(egl_error("eglCreateSyncKHR"));
+            return Err(self.0.native.error("eglCreateSyncKHR"));
         }
         Ok(Fence {
             owner: self.0.clone(),
@@ -507,8 +365,9 @@ impl Context {
         self.check("texture allocation")?;
         Ok(texture)
     }
-    /// Reorder standard BC blocks into caller-accounted native staging and upload
-    /// compressed blocks directly; no RGBA expansion is performed.
+    /// Upload BC1/BC3 blocks without RGBA expansion. Vita reorders blocks into
+    /// caller-accounted staging; desktop EGL consumes standard S3TC blocks.
+    /// Both paths validate the same payload and staging extent.
     pub fn create_bc_texture(
         &self,
         size: [u32; 2],
@@ -535,7 +394,20 @@ impl Context {
         if blocks.len() != bytes || staging.len() != bytes {
             return Err(Error::Invalid("BC payload extent"));
         }
-        reorder_blocks(size, block, blocks, staging);
+        #[cfg(target_os = "vita")]
+        let (compressed_format, payload) = {
+            reorder_blocks(size, block, blocks, staging);
+            (if block == 8 { 0x60000001 } else { 0x60000002 }, &*staging)
+        };
+        #[cfg(not(target_os = "vita"))]
+        let (compressed_format, payload) = (
+            if block == 8 {
+                glow::COMPRESSED_RGB_S3TC_DXT1_EXT as i32
+            } else {
+                glow::COMPRESSED_RGBA_S3TC_DXT5_EXT as i32
+            },
+            blocks,
+        );
         let name = unsafe {
             self.0
                 .gl
@@ -574,12 +446,12 @@ impl Context {
             gl.compressed_tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                if block == 8 { 0x60000001 } else { 0x60000002 },
+                compressed_format,
                 size[0] as i32,
                 size[1] as i32,
                 0,
                 bytes as i32,
-                staging,
+                payload,
             );
         }
         self.check("compressed texture upload")?;
@@ -709,7 +581,7 @@ impl Context {
         self.check("framebuffer attachment")?;
         Ok(target)
     }
-    /// Load offline SGX binaries, bind attributes and link an owned program.
+    /// Load the supplied target shader payloads, bind attributes and link an owned program.
     pub fn create_program(
         &self,
         vertex: ShaderCode<'_>,
@@ -737,18 +609,23 @@ impl Context {
             let result = (|| {
                 unsafe {
                     match code {
+                        #[cfg(not(target_os = "vita"))]
+                        ShaderCode::Source(source) => {
+                            gl.shader_source(shader, source);
+                            gl.compile_shader(shader);
+                        }
                         ShaderCode::SgxBinary(bytes) => {
                             if !self.0.caps.shader_binary || bytes.len() > i32::MAX as usize {
                                 return Err(Error::Unsupported("SGX shader binary"));
                             }
-                            type Load = unsafe extern "C" fn(
+                            type Load = unsafe extern "system" fn(
                                 i32,
                                 *const u32,
                                 u32,
                                 *const core::ffi::c_void,
                                 i32,
                             );
-                            let address = eglGetProcAddress(c"glShaderBinary".as_ptr());
+                            let address = self.0.native.proc_address("glShaderBinary");
                             if address.is_null() {
                                 return Err(Error::Unsupported("glShaderBinary"));
                             }
@@ -806,7 +683,7 @@ impl Context {
         if stride == 0
             || stride > i32::MAX as u32 / 4
             || std::mem::size_of_val(data) > i32::MAX as usize
-            || data.len() % stride as usize != 0
+            || !data.len().is_multiple_of(stride as usize)
             || attributes.iter().any(|a| {
                 a.components == 0
                     || a.components > 4
@@ -908,10 +785,10 @@ impl Context {
         }
         for texture in draw.textures {
             self.same(&texture.0.owner)?;
-            if let Target::Framebuffer(target) = draw.target {
-                if Rc::ptr_eq(&texture.0, &target.0.texture.0) {
-                    return Err(Error::Invalid("framebuffer texture feedback"));
-                }
+            if let Target::Framebuffer(target) = draw.target
+                && Rc::ptr_eq(&texture.0, &target.0.texture.0)
+            {
+                return Err(Error::Invalid("framebuffer texture feedback"));
             }
         }
         if let Some(indices) = draw.indices {
@@ -1077,50 +954,10 @@ impl Context {
         Ok(value)
     }
 }
-fn load_module(path: &str) -> Result<i32> {
-    let path = CString::new(path).map_err(|_| Error::Invalid("module path contains NUL"))?;
-    let mut status = 0;
-    let id = unsafe {
-        sceKernelLoadStartModule(
-            path.as_ptr(),
-            0,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut status,
-        )
-    };
-    if id < 0 {
-        Err(Error::Sdk("load module", id))
-    } else if status < 0 {
-        Err(Error::Sdk("start module", status))
-    } else {
-        Ok(id)
-    }
-}
-fn set_path(slot: &mut [core::ffi::c_char; 256], path: &str) -> Result<()> {
-    if path.len() >= slot.len() || path.as_bytes().contains(&0) {
-        return Err(Error::Invalid("PVR module path"));
-    }
-    slot.fill(0);
-    for (out, input) in slot.iter_mut().zip(path.bytes()) {
-        *out = input as core::ffi::c_char;
-    }
-    Ok(())
-}
-fn egl_error(operation: &'static str) -> Error {
-    Error::Egl(operation, unsafe { eglGetError() })
-}
-fn egl_ok(operation: &'static str, value: EGLBoolean) -> Result<()> {
-    if value == EGL_TRUE {
-        Ok(())
-    } else {
-        Err(egl_error(operation))
-    }
-}
 fn float_bytes(value: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), std::mem::size_of_val(value)) }
 }
+#[cfg(target_os = "vita")]
 fn reorder_blocks(size: [u32; 2], bytes: usize, input: &[u8], output: &mut [u8]) {
     let width = size[0] / 4;
     let height = size[1] / 4;
@@ -1218,10 +1055,14 @@ pub enum Target<'a> {
     Screen,
     Framebuffer(&'a Framebuffer),
 }
-/// Precompiled target binary; the runtime does not compile GLSL source.
+/// Target shader payload: SGX binary on Vita, GLSL source for desktop probes.
 #[derive(Clone, Copy)]
 pub enum ShaderCode<'a> {
+    /// Precompiled SGX program for the maintained Vita driver.
     SgxBinary(&'a [u8]),
+    /// GLSL ES source compiled by the desktop driver.
+    #[cfg(not(target_os = "vita"))]
+    Source(&'a str),
 }
 pub struct AttributeBinding<'a> {
     pub location: u32,

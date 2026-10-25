@@ -9,8 +9,8 @@
 //! These modules use `std`; the raw bindings remain available with `no_std`.
 //!
 //! Vita builds link import stubs; applications must deploy and load the
-//! matching runtime modules separately. Building on another platform permits
-//! type checking and host tooling, but does not provide a graphics runtime.
+//! matching runtime modules separately. On desktop, `graphics` can create an
+//! EGL pbuffer for offscreen GLES execution using the host's EGL implementation.
 #![no_std]
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
@@ -22,7 +22,7 @@ pub mod gles;
 extern crate std;
 
 /// Thread-bound graphics resources and command submission.
-#[cfg(all(feature = "graphics", target_os = "vita"))]
+#[cfg(feature = "graphics")]
 pub mod graphics;
 /// Owned native host services.
 #[cfg(all(feature = "platform", target_os = "vita"))]
