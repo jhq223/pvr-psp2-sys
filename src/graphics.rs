@@ -581,7 +581,7 @@ impl Context {
         self.check("framebuffer attachment")?;
         Ok(target)
     }
-    /// Load offline SGX binaries, bind attributes and link an owned program.
+    /// Load the supplied target shader payloads, bind attributes and link an owned program.
     pub fn create_program(
         &self,
         vertex: ShaderCode<'_>,
