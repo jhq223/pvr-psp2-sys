@@ -16,7 +16,7 @@ add_custom_command(OUTPUT "${CHECK_EXE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/fences.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/optimizations.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/allocators.rs"
-            "${CMAKE_CURRENT_SOURCE_DIR}/check/fences.rs" "${PVR_RUSTC}"
+            "${PVR_RUSTC}"
     COMMENT "Build host PVR checker with Rust (standard library only)" VERBATIM)
 
 set(PSVSDK "$ENV{SCE_PSP2_SDK_DIR}" CACHE PATH "Official PSVSDK root (host_tools and target)")
