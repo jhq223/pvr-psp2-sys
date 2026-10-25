@@ -153,6 +153,11 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     for (name, file, markers) in [
         (
+            "uniform_memory",
+            "opengles2/uniform.c",
+            vec!["IMG_INTERNAL GLES2_MEMERROR WriteUSEShaderMemConsts("],
+        ),
+        (
             "fbo_surface",
             "opengles2/fbo.c",
             vec!["IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface("],
@@ -391,6 +396,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "async_texture",
         "async_wait",
         "uniform_lookup",
+        "uniform_memory",
         "resource_wait",
         "resource_consumers",
         "copy_transfer_order",
