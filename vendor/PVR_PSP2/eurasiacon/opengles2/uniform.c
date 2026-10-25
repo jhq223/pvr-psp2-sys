@@ -349,7 +349,7 @@ IMG_INTERNAL GLES2_MEMERROR WriteUSEShaderMemConsts(GLES2Context *gc, IMG_UINT32
 	{
 		psShader = &psProgram->sVertex;
 		psPatchedShader = gc->sProgram.psCurrentVertexVariant->psPatchedShader;
-		pui32TexControlWords = &gc->sPrim.sFragmentTextureState.aui32TAGControlWord[0];
+		pui32TexControlWords = &gc->sPrim.sVertexTextureState.aui32TAGControlWord[0];
 		
 		ui32ConstantBufferType = CBUF_TYPE_PDS_VERT_BUFFER;
 		eError = GLES2_TA_BUFFER_ERROR;
@@ -358,13 +358,13 @@ IMG_INTERNAL GLES2_MEMERROR WriteUSEShaderMemConsts(GLES2Context *gc, IMG_UINT32
 	{
 		psShader = &psProgram->sFragment;
 		psPatchedShader = gc->sProgram.psCurrentFragmentVariant->psPatchedShader;
-		pui32TexControlWords = &gc->sPrim.sVertexTextureState.aui32TAGControlWord[0];
+		pui32TexControlWords = &gc->sPrim.sFragmentTextureState.aui32TAGControlWord[0];
 		
 		ui32ConstantBufferType = CBUF_TYPE_PDS_FRAG_BUFFER;
 		eError = GLES2_3D_BUFFER_ERROR;
 	}
 
-	ui32SizeOfConstantsInDWords = psPatchedShader->uMemConstCount + (psPatchedShader->uMemTexStateCount * 3);
+	ui32SizeOfConstantsInDWords = psPatchedShader->uMemConstCount + (psPatchedShader->uMemTexStateCount * EURASIA_TAG_TEXTURE_STATE_SIZE);
 
 	/*
 		Get buffer space for all the memory constants/texture control words
