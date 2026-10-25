@@ -13,8 +13,10 @@ add_custom_command(OUTPUT "${CHECK_EXE}"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/check.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/abi.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/depfile.rs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/check/fences.rs"
             "${CMAKE_CURRENT_SOURCE_DIR}/check/optimizations.rs"
-            "${CMAKE_CURRENT_SOURCE_DIR}/check/allocators.rs" "${PVR_RUSTC}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/check/allocators.rs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/check/fences.rs" "${PVR_RUSTC}"
     COMMENT "Build host PVR checker with Rust (standard library only)" VERBATIM)
 
 set(PSVSDK "$ENV{SCE_PSP2_SDK_DIR}" CACHE PATH "Official PSVSDK root (host_tools and target)")
@@ -51,6 +53,9 @@ add_custom_command(OUTPUT "${IMPORT_DIR}/ready" ${PVR_IMPORT_LIBRARIES}
     DEPENDS "${PVR_ROOT}/lib/SceGpuEs4User.emd" "${PVR_ROOT}/lib/SceGpuEs4UserForVsh.emd"
             "${CMAKE_CURRENT_LIST_DIR}/imports/extensions.emd" "${LIBGEN}"
     WORKING_DIRECTORY "${IMPORT_DIR}" VERBATIM)
+
+# Give shared generated files one producer before the module projects run.
+add_custom_target(pvr_native_support DEPENDS "${CHECK_EXE}" "${IMPORT_DIR}/ready" ${PVR_IMPORT_LIBRARIES})
 
 include(cmake/sources.cmake)
 
@@ -102,6 +107,7 @@ function(pvr_module name)
                 "${CHECK_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/abi/${name}.nids"
         COMMENT "PSVSDK link and ABI check: ${name}" VERBATIM)
     add_custom_target(${name} ALL DEPENDS "${module}" "${stub}")
+    add_dependencies(${name} pvr_native_support ${ARGN})
 endfunction()
 
 pvr_module(libgpu_es4_ext)

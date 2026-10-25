@@ -1866,8 +1866,9 @@ IMG_EXPORT EGLBoolean IMGeglInitialize(EGLDisplay eglDpy, EGLint *major, EGLint 
 			psDpy->bUseHWForWindowSync = IMG_FALSE;
 			psDpy->bUseHWForPixmapSync = IMG_FALSE;
 			psDpy->bUnlockedWSEGL = IMG_FALSE;
-#if defined(EGL_EXTENSION_KHR_FENCE_SYNC)
+#if defined(EGL_EXTENSION_KHR_FENCE_SYNC) || defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
 			psDpy->psHeadSync = IMG_NULL;
+			psDpy->bSyncsTerminating = IMG_FALSE;
 #endif
 
 			while (psCapabilities->eCapsType!=WSEGL_NO_CAPS)
@@ -2016,6 +2017,16 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 
 	EGLThreadLock(psTls);
 
+#if defined(EGL_EXTENSION_KHR_FENCE_SYNC) || defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
+    /* A concurrent terminator can release the lock while draining waiters. */
+    while(psDpy->bSyncsTerminating)
+    {
+        EGLThreadUnlock(psTls);
+        PVRSRVWaitus(1000);
+        EGLThreadLock(psTls);
+    }
+#endif
+
 #if defined(EGL_EXTENSION_IMG_EGL_HIBERNATION)
 	psSysContext = &psTls->psGlobalData->sSysContext;
 	if(psSysContext->bHibernated == IMG_TRUE)
@@ -2035,8 +2046,17 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 #endif /* defined(EGL_EXTENSION_KHR_IMAGE) */
 
 #if defined(EGL_EXTENSION_KHR_FENCE_SYNC) || defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
-		TerminateSyncs(psDpy, &psTls->psGlobalData->sSysContext);
+		/* Waiter references keep the Services context alive through cleanup. */
+        if(!TerminateSyncs(psDpy, psTls) || psDpy->psHeadSync != IMG_NULL)
+        {
+            bClose = IMG_FALSE;
+            returnstatus = EGL_FALSE;
+        }
 #endif
+
+		/* A finishing sync waiter temporarily releases the global lock. */
+		psSurface = psDpy->psHeadSurface;
+		psContext = psDpy->psHeadContext;
 
 		/* search the surfaces associated with a specified display and mark or delete */
 		while(psSurface)

@@ -7,6 +7,8 @@ mod abi;
 mod allocators;
 #[path = "check/depfile.rs"]
 mod depfile;
+#[path = "check/fences.rs"]
+mod fences;
 #[path = "check/optimizations.rs"]
 mod optimizations;
 
@@ -30,11 +32,15 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let cc = env::var_os("CC").unwrap_or_else(|| "cc".into());
             optimizations::check(Path::new(root), Path::new(output), &cc)
         }
+        [command, root, output] if command == "fences" => {
+            let cc = env::var_os("CC").unwrap_or_else(|| "cc".into());
+            fences::check(Path::new(root), Path::new(output), &cc)
+        }
         [command, root, output] if command == "allocators" => {
             let cc = env::var_os("CC").unwrap_or_else(|| "cc".into());
             allocators::check(Path::new(root), Path::new(output), &cc)
         }
-        _ => Err("usage: pvr-native-check abi <expected.nids> <rebuilt_stub.a>\n       pvr-native-check allocators <pvr-psp2-sys directory> <test output directory>\n       pvr-native-check optimizations <pvr-psp2-sys directory> <test output directory>\nSet CC to select the host C compiler for allocator tests.".into()),
+        _ => Err("usage: pvr-native-check abi <expected.nids> <rebuilt_stub.a>\n       pvr-native-check allocators <pvr-psp2-sys directory> <test output directory>\n       pvr-native-check optimizations <pvr-psp2-sys directory> <test output directory>\n       pvr-native-check fences <pvr-psp2-sys directory> <test output directory>\nSet CC to select the host C compiler for allocator tests.".into()),
     }
 }
 

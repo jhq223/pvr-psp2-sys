@@ -144,6 +144,7 @@ typedef struct KEGL_DISPLAY_TAG
 
 #if defined(EGL_EXTENSION_KHR_FENCE_SYNC) || defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
 	KEGL_SYNC *psHeadSync;
+	IMG_BOOL bSyncsTerminating;
 #endif /* defined(EGL_EXTENSION_KHR_FENCE_SYNC) || defined(EGL_EXTENSION_KHR_REUSABLE_SYNC) */
 
 #if defined(EGL_EXTENSION_NOK_IMAGE_SHARED) 

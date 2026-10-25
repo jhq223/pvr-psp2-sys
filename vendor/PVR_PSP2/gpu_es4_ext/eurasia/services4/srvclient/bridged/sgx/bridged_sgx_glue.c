@@ -27,6 +27,7 @@ PVRSRV_ERROR IMG_CALLCONV SGX2DQueryBlitsComplete(PVRSRV_DEV_DATA *psDevData,
 {
 	PVRSRV_BRIDGE_RETURN sBridgeOut;
 	PVRSRV_BRIDGE_IN_2DQUERYBLTSCOMPLETE sBridgeIn;
+	PVRSRV_ERROR eError;
 
 	PVRSRVMemSet(&sBridgeOut, 0x00, sizeof(sBridgeOut));
 	PVRSRVMemSet(&sBridgeIn, 0x00, sizeof(sBridgeIn));
@@ -41,15 +42,16 @@ PVRSRV_ERROR IMG_CALLCONV SGX2DQueryBlitsComplete(PVRSRV_DEV_DATA *psDevData,
 	sBridgeIn.psSyncInfo = psSyncInfo;
 	sBridgeIn.bWaitForComplete = bWaitForComplete;
 
-	if (PVRSRVBridgeCall(psDevData->psConnection->hServices,
+	eError = PVRSRVBridgeCall(psDevData->psConnection->hServices,
 		PVRSRV_BRIDGE_SGX_2DQUERYBLTSCOMPLETE,
 		&sBridgeIn,
 		sizeof(sBridgeIn),
 		&sBridgeOut,
-		sizeof(sBridgeOut)))
+		sizeof(sBridgeOut));
+	if (eError != PVRSRV_OK)
 	{
-		PVR_DPF((PVR_DBG_ERROR, "SGX2DQueryBlitsComplete: BridgeCall failed"));
-		return PVRSRV_ERROR_BRIDGE_CALL_FAILED;
+		/* Preserve RETRY for a nonblocking poll and keep device errors distinct. */
+		return eError;
 	}
 
 	return sBridgeOut.eError;
