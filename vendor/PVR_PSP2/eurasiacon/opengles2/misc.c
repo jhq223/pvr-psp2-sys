@@ -839,49 +839,36 @@ GL_APICALL void GL_APIENTRY glFinish(void)
 	}
 #endif /* defined(GLES2_EXTENSION_EGL_IMAGE) */
 
-	/* Kick TA/3D, Wait 3D, as long as it is needed */
-	if(bNeedFinish)
+	/* Completion is a contract: a failed kick or wait must reach glGetError,
+	 * otherwise callers can release allocations still owned by the GPU. */
+	if(bNeedFinish || gc->sAppHints.ui32FlushBehaviour == GLES2_HINT_KICK_3D)
 	{
-	    ui32Flags |= GLES2_SCHEDULE_HW_WAIT_FOR_3D;
-		
-		FlushAllUnflushedFBO(gc, IMG_TRUE);
-
-		if(gc->psRenderSurface)
+		ui32Flags |= GLES2_SCHEDULE_HW_WAIT_FOR_3D;
+		if(!FlushAllUnflushedFBO(gc, IMG_TRUE))
 		{
-			if (gc->psRenderSurface->bInFrame)
-			{
-				ui32Flags |= GLES2_SCHEDULE_HW_LAST_IN_SCENE;
-			}
-
-			ScheduleTA(gc, gc->psRenderSurface, ui32Flags);
+			sceClibPrintf("[PVR][finish] framebuffer completion failed\n");
+			SetError(gc, GL_INVALID_OPERATION);
+			goto finish_done;
+		}
+		if(gc->psRenderSurface && gc->psRenderSurface->bInFrame)
+		{
+			ui32Flags |= GLES2_SCHEDULE_HW_LAST_IN_SCENE;
 		}
 	}
-	/*********** Kick + Wait TA / 3D according to apphint  ***********/
-	else
+	else if(gc->sAppHints.ui32FlushBehaviour == GLES2_HINT_KICK_TA)
 	{
-		/*********** Set Kick + Wait TA Flag ***********/
-		if (gc->sAppHints.ui32FlushBehaviour == GLES2_HINT_KICK_TA)
+		ui32Flags |= GLES2_SCHEDULE_HW_WAIT_FOR_TA;
+	}
+	if(gc->psRenderSurface)
+	{
+		IMG_EGLERROR eError = ScheduleTA(gc, gc->psRenderSurface, ui32Flags);
+		if(eError != IMG_EGL_NO_ERROR)
 		{
-			ui32Flags |= GLES2_SCHEDULE_HW_WAIT_FOR_TA;
-		}
-		/*********** Set Kick + Wait 3D Flag ***********/
-		else if (gc->sAppHints.ui32FlushBehaviour == GLES2_HINT_KICK_3D)
-		{
-			ui32Flags |= GLES2_SCHEDULE_HW_WAIT_FOR_3D;
-			
-			FlushAllUnflushedFBO(gc, IMG_TRUE);
-
-			if (gc->psRenderSurface && gc->psRenderSurface->bInFrame)
-			{
-				ui32Flags |= GLES2_SCHEDULE_HW_LAST_IN_SCENE;
-			}
-		}
-
-		if(gc->psRenderSurface)
-		{
-			ScheduleTA(gc, gc->psRenderSurface, ui32Flags);
+			sceClibPrintf("[PVR][finish] ScheduleTA failed: 0x%X\n", (unsigned)eError);
+			SetError(gc, GL_INVALID_OPERATION);
 		}
 	}
+finish_done:
 
 	GLES2_TIME_STOP(GLES2_TIMES_glFinish);
 }
