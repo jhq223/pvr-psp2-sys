@@ -90,6 +90,7 @@ struct Inner {
     native: Native,
     vsync: Cell<bool>,
     fences: FenceApi,
+    enabled_attributes: Vec<Cell<bool>>,
 }
 /// An owned GPU command fence; polling performs one native nonblocking query.
 pub struct Fence {
@@ -197,6 +198,9 @@ impl Context {
             }
         };
         let context = Self(Rc::new(Inner {
+            enabled_attributes: (0..caps.max_vertex_attributes)
+                .map(|_| Cell::new(false))
+                .collect(),
             gl,
             caps,
             native,
@@ -831,11 +835,24 @@ impl Context {
                 self.uniform(draw.program, *uniform)?;
             }
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(draw.vertices.name));
-            for index in 0..self.0.caps.max_vertex_attributes {
-                gl.disable_vertex_attrib_array(index);
+            // This context owns all attribute state. Keep unchanged layouts
+            // enabled instead of invalidating the driver's vertex fetch state.
+            for (index, enabled) in self.0.enabled_attributes.iter().enumerate() {
+                let wanted = draw
+                    .vertices
+                    .attributes
+                    .iter()
+                    .any(|a| a.location as usize == index);
+                if enabled.get() != wanted {
+                    if wanted {
+                        gl.enable_vertex_attrib_array(index as u32);
+                    } else {
+                        gl.disable_vertex_attrib_array(index as u32);
+                    }
+                    enabled.set(wanted);
+                }
             }
             for a in &draw.vertices.attributes {
-                gl.enable_vertex_attrib_array(a.location);
                 gl.vertex_attrib_pointer_f32(
                     a.location,
                     a.components as i32,
