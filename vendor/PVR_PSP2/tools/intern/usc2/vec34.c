@@ -23677,6 +23677,11 @@ IMG_BOOL CombineInstructions(PDGRAPH_STATE			psDepState,
 							++uMovsRemaining;
 						}
 					}
+					else
+					{
+						/* These source moves cannot be packed into one format. */
+						++uMovsRemaining;
+					}
 				}
 			}
 		}

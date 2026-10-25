@@ -85,7 +85,7 @@
 #define EGL_EXTENSION_KHR_FENCE_SYNC
 //#define EGL_EXTENSION_IMG_EGL_HIBERNATION
 #if defined(__psp2__)
-#undef EGL_EXTENSION_KHR_FENCE_SYNC
+/* Vita uses the ordered 3D/TQ fence path and nonblocking Services queries. */
 #define EGL_EXTENSION_KHR_REUSABLE_SYNC
 #define EGL_CORE_PROC
 #endif

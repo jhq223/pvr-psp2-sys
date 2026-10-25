@@ -45,14 +45,39 @@ $Log: egl_sync.c $
 #include <stdio.h>
 #include <time.h>
 
-//TODOPSP2: find less strict implementation (needs to only check for writes, currently checks for reads too)
-#define EGL_FENCE_SYNC_COMPLETE(psDevData, sync) !SGX2DQueryBlitsComplete(psDevData, (sync)->psSyncMemInfo->psClientSyncInfo, IMG_FALSE)
+/* A reusable sync has no GPU allocation. Fence queries must never enter the
+ * Services blocking/retry path; the caller supplies the timeout policy. */
+static IMG_BOOL _fencePending(PVRSRV_ERROR error)
+{
+    return error == PVRSRV_ERROR_CMD_NOT_PROCESSED || error == PVRSRV_ERROR_RETRY;
+}
+
+static PVRSRV_ERROR _queryFence(PVRSRV_DEV_DATA *device, KEGL_SYNC *sync)
+{
+    return SGX2DQueryBlitsComplete(device, sync->psSyncMemInfo->psClientSyncInfo, IMG_FALSE);
+}
+
+/* Called with the EGL lock held for cleanup/status operations. */
+static EGLBoolean _syncComplete(PVRSRV_DEV_DATA *device, KEGL_SYNC *sync)
+{
+    if(sync->eglSyncType != EGL_SYNC_FENCE_KHR || sync->eglSyncStatus == EGL_SIGNALED_KHR)
+    {
+        return EGL_TRUE;
+    }
+    if(_queryFence(device, sync) == PVRSRV_OK)
+    {
+        sync->eglSyncStatus = EGL_SIGNALED_KHR;
+        return EGL_TRUE;
+    }
+    return EGL_FALSE;
+}
+#define EGL_FENCE_SYNC_COMPLETE(device, sync) _syncComplete(device, sync)
 
 /* external symbols */
 KEGL_DISPLAY *GetKEGLDisplay(TLS psTls, EGLDisplay eglDpy);
 
 
-static void _waitFence(KEGL_SYNC *psSync, SrvSysContext *psSysContext, EGLTimeKHR timeout);
+static EGLint _waitFence(KEGL_SYNC *psSync, SrvSysContext *psSysContext, EGLTimeKHR timeout);
 static EGLint IMGeglClientWaitSyncKHR_Fence(TLS psTls, KEGL_SYNC *psSync, EGLint flags, EGLTimeKHR timeout);
 
 static EGLint IMGeglClientWaitSyncKHR_Reusable(TLS psTls, KEGL_SYNC *psSync, EGLint flags, EGLTimeKHR timeout);
@@ -267,10 +292,28 @@ static EGLBoolean _deleteSync(KEGL_SYNC *psSync, SrvSysContext *psSysContext)
 	PVR_ASSERT(psSync);
 	PVR_ASSERT(psSysContext);
 
-	if(!EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
+	if(psSync->refcount > 0 || !EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
 	{
 		return EGL_FALSE;
 	}
+
+	if ( psSync->eglSyncType == EGL_SYNC_FENCE_KHR )
+	{
+		/* Free the sync object and dummy memory */
+		if(IMGEGLFREEDEVICEMEM( &psSysContext->s3D,
+								psSync->psSyncMemInfo) != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR,"DeleteSync: Could not free Fence Sync dummy memory"));
+			return EGL_FALSE;
+		}
+	}
+#if defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
+	else
+	{
+		PVRSRVDestroySemaphore( psSync->hReusableSemaphore );
+	}
+#endif
+
 
 	/* unbind the sync from the display */
 	if(psSync->psDpy->psHeadSync != psSync)
@@ -292,22 +335,6 @@ static EGLBoolean _deleteSync(KEGL_SYNC *psSync, SrvSysContext *psSysContext)
 		psSync->psDpy->psHeadSync = psSync->psDpy->psHeadSync->psNextSync;
 	}
 
-	if ( psSync->eglSyncType == EGL_SYNC_FENCE_KHR )
-	{
-		/* Free the sync object and dummy memory */
-		if(IMGEGLFREEDEVICEMEM( &psSysContext->s3D,
-								psSync->psSyncMemInfo) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"DeleteSync: Could not free Fence Sync dummy memory"));
-			return EGL_FALSE;
-		}
-	}
-#if defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
-	else
-	{
-		PVRSRVDestroySemaphore( psSync->hReusableSemaphore );
-	}
-#endif
 
 	EGLFree(psSync);
 
@@ -350,43 +377,50 @@ static void _cleanupSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext)
  Returns            : void
  Description        : call destroy on remaining eglSyncs.
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID TerminateSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext)
+IMG_INTERNAL EGLBoolean TerminateSyncs(KEGL_DISPLAY *psDpy, TLS psTls)
 {
-	KEGL_SYNC *psSync = psDpy->psHeadSync;
-
-	/* search the syncs associated with a specified display and mark or delete */
-	while(psSync)
-	{
-		KEGL_SYNC *psNextSync = psSync->psNextSync;
-
-		if(psSync->psDpy == psDpy)
-		{
-			/* We wait if there are any ClientWaitSyncs outstanding or
-			 * if there were no waits issued, we still have to wait for TQ to complete */
-			if(psSync->refcount>0 || !EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
-			{
-				/* wait for TQ to complete */
-				_waitFence(psSync, psSysContext, EGL_FOREVER_KHR);
-			}
-			if(psSync)
-			{
-				if(EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
-				{
-					if(!_deleteSync(psSync, psSysContext))
-					{
-						PVR_DPF((PVR_DBG_ERROR, "Delete Sync Failed %p", psSync));
-					}
-				}
-				else
-				{
-					PVR_DPF((PVR_DBG_ERROR, "Sync did not complete after wait - cannot delete %p", psSync));
-				}
-			}
-
-		}
-
-		psSync = psNextSync;
-	}	
+    SrvSysContext *system = &psTls->psGlobalData->sSysContext;
+    psDpy->bSyncsTerminating = IMG_TRUE;
+    /* The caller holds the EGL lock and owns the display/services until this
+     * finishes. Re-read the list after unlocking: a last waiter may have freed
+     * any marked sync during that interval. */
+    while(psDpy->psHeadSync)
+    {
+        KEGL_SYNC *sync = psDpy->psHeadSync;
+        sync->bIsDeleting = EGL_TRUE;
+#if defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
+        if(sync->eglSyncType == EGL_SYNC_REUSABLE_KHR && sync->ui32WaitValue > 0)
+        {
+            sync->ui64WaitLevel++;
+            PVRSRVPostSemaphore(sync->hReusableSemaphore, sync->ui32WaitValue);
+            sync->ui32WaitValue = 0;
+        }
+#endif
+        if(sync->refcount > 0)
+        {
+            EGLThreadUnlock(psTls);
+            PVRSRVWaitus(1000);
+            EGLThreadLock(psTls);
+            continue;
+        }
+        if(sync->eglSyncType == EGL_SYNC_FENCE_KHR && !EGL_FENCE_SYNC_COMPLETE(&system->s3D, sync))
+        {
+            if(_waitFence(sync, system, EGL_FOREVER_KHR) != EGL_CONDITION_SATISFIED_KHR)
+            {
+                psTls->lastError = EGL_BAD_ACCESS;
+                psDpy->bSyncsTerminating = IMG_FALSE;
+                return EGL_FALSE;
+            }
+        }
+        if(!_deleteSync(sync, system))
+        {
+            psTls->lastError = EGL_BAD_ACCESS;
+            psDpy->bSyncsTerminating = IMG_FALSE;
+            return EGL_FALSE;
+        }
+    }
+    psDpy->bSyncsTerminating = IMG_FALSE;
+    return EGL_TRUE;
 }
 
 /***********************************************************************************
@@ -403,6 +437,7 @@ IMG_INTERNAL EGLSyncKHR	IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, con
 	TLS             psTls;
 	KEGL_CONTEXT    *psCurrentContext = EGL_NO_CONTEXT;
 	SrvSysContext   *psSysContext;
+	IMG_BOOL bLocked = IMG_FALSE;
 
 	PVR_DPF((PVR_DBG_CALLTRACE, "IMGeglCreateSyncKHR"));
 
@@ -452,6 +487,14 @@ IMG_INTERNAL EGLSyncKHR	IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, con
 	{
 		psTls->lastError = EGL_BAD_DISPLAY;
 
+		goto err_stop_timer;
+	}
+
+	EGLThreadLock(psTls);
+	bLocked = IMG_TRUE;
+	if(!psDpy->isInitialised || psDpy->bSyncsTerminating)
+	{
+		psTls->lastError = EGL_NOT_INITIALIZED;
 		goto err_stop_timer;
 	}
 
@@ -564,16 +607,12 @@ IMG_INTERNAL EGLSyncKHR	IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, con
 						PVRSRV_PDUMP_FLAGS_CONTINUOUS);
 #endif /* defined(PDUMP) */
 
-		/* Flush the buffers to get the TA/3D to complete */
-		if(!_flushBuffers(psSync->psContext, psTls))
-		{
-			/* If flush fails and last error is set, bail out */
-			/* Otherwise it is just a case of no context or context that can't be flushed */
-			if(psTls->lastError != EGL_SUCCESS)
-			{
-				PVR_DPF((PVR_DBG_ERROR,"IMGeglCreateSyncKHR: Flushbuffers failed"));
-			}
-		}
+        /* Publish all preceding API work before the ordered transfer. */
+        if(!_flushBuffers(psSync->psContext, psTls))
+        {
+            if(psTls->lastError == EGL_SUCCESS) psTls->lastError = EGL_BAD_CONTEXT;
+            goto err_dealloc_device_mem;
+        }
 
 		/* Place a fence command into the GL command stream */
 		if(!_insertEglFence(psSync->psContext, psTls, psSync))
@@ -596,8 +635,6 @@ IMG_INTERNAL EGLSyncKHR	IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, con
 	}
 #endif
 
-	EGLThreadLock(psTls);
-	
 	/* Chain the new image onto the displays sync list */
 	psSync->psNextSync = psDpy->psHeadSync;
 	psDpy->psHeadSync = psSync;
@@ -621,6 +658,7 @@ err_free_sync:
 
 err_stop_timer:
 
+	if(bLocked) EGLThreadUnlock(psTls);
 	IMGEGL_TIME_STOP(IMGEGL_TIMER_IMGeglCreateSyncKHR);
 
 err_out:
@@ -704,15 +742,8 @@ IMG_INTERNAL EGLBoolean IMGeglDestroySyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync)
 
 	psSysContext = &psTls->psGlobalData->sSysContext;
 
-	/* If there are any ClientWaits blocking on this sync, just mark for delete */
-	if(psSync->refcount>0 || !EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
-	{
-		psSync->bIsDeleting=EGL_TRUE;
-	}
-	else
-	{
-		ret = _deleteSync(psSync, psSysContext);
-	}
+    psSync->bIsDeleting = EGL_TRUE;
+    ret = EGL_TRUE;
 
 	_cleanupSyncs(psDpy, psSysContext);
 
@@ -740,7 +771,7 @@ err_out:
                       Fence or Reusable sync
 					  Note: you can't wait on a deleted sync
 ************************************************************************************/
-IMG_INTERNAL EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR *sync, EGLint flags, EGLTimeKHR timeout)
+IMG_INTERNAL EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync, EGLint flags, EGLTimeKHR timeout)
 {
 	EGLint ret = EGL_FALSE;
 	KEGL_SYNC *psSync = (KEGL_SYNC*)sync;
@@ -750,10 +781,6 @@ IMG_INTERNAL EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR *sync,
 
 	PVR_DPF((PVR_DBG_CALLTRACE, "IMGeglClientWaitSyncKHR"));
 
-	if(!psSync)
-	{
-		goto err_out;
-	}
 
 	psTls = TLS_Open(_TlsInit);
 
@@ -833,9 +860,15 @@ IMG_INTERNAL EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR *sync,
 
 		if(psTls->lastError==EGL_BAD_MATCH)
 		{
-			goto err_stop_timer;
+			goto err_unlock;
 		}
 	}
+
+    if(flags & ~EGL_SYNC_FLUSH_COMMANDS_BIT_KHR)
+    {
+        psTls->lastError = EGL_BAD_PARAMETER;
+        goto err_unlock;
+    }
 
 	psSync->refcount++;
 
@@ -876,42 +909,30 @@ err_out:
  Returns            : 
  Description        : Wait for Fence to complete
 ************************************************************************************/
-static void _waitFence(KEGL_SYNC *psSync, SrvSysContext *psSysContext, EGLTimeKHR timeout)
+static EGLint _waitFence(KEGL_SYNC *psSync, SrvSysContext *psSysContext, EGLTimeKHR timeout)
 {
-	IMG_UINT32 ui32LastTime_us=0, ui32Timeout_us;
-	
-	/* note current time */
-	if(timeout != EGL_FOREVER_KHR)
-	{
-		ui32LastTime_us = PVRSRVClockus();
-	}
-
-	/* timeout loop */
-	ui32Timeout_us = (IMG_UINT32) (timeout / 1000);
-
-	while(timeout == EGL_FOREVER_KHR || ui32Timeout_us > 0)
-	{
-		//This will result in inaccurate timeouts, but it is still better than what was here before
-		if (!SGX2DQueryBlitsComplete(&psSysContext->s3D, psSync->psSyncMemInfo->psClientSyncInfo, IMG_TRUE))
-		{
-			psSync->eglSyncStatus = EGL_SIGNALED_KHR;
-			break;
-		}
-
-		/* Check the object was not signalled externally (by destroy) */
-		if(psSync->eglSyncStatus==EGL_SIGNALED_KHR)
-		{
-			break;
-		}
-		
-		if(timeout != EGL_FOREVER_KHR)
-		{
-			IMG_UINT32 elapsed;
-			elapsed = PVRSRVClockus() - ui32LastTime_us;
-			ui32Timeout_us = (elapsed > ui32Timeout_us) ? 0 : ui32Timeout_us - elapsed;
-			ui32LastTime_us = PVRSRVClockus();
-		}
-	}
+    EGLTimeKHR remaining = timeout;
+    IMG_UINT32 previous = PVRSRVClockus();
+    for(;;)
+    {
+        PVRSRV_ERROR result = _queryFence(&psSysContext->s3D, psSync);
+        if(result == PVRSRV_OK) return EGL_CONDITION_SATISFIED_KHR;
+        if(!_fencePending(result)) return EGL_FALSE;
+        if(timeout != EGL_FOREVER_KHR)
+        {
+            IMG_UINT32 now = PVRSRVClockus();
+            EGLTimeKHR elapsed = (EGLTimeKHR)(IMG_UINT32)(now - previous) * 1000;
+            previous = now;
+            remaining = elapsed >= remaining ? 0 : remaining - elapsed;
+            if(remaining == 0) return EGL_TIMEOUT_EXPIRED_KHR;
+            /* ceil(ns/us), without overflow at the largest finite timeout. */
+            PVRSRVWaitus((IMG_UINT32)(remaining > 1000000 ? 1000 : remaining / 1000 + (remaining % 1000 != 0)));
+        }
+        else
+        {
+            PVRSRVWaitus(1000);
+        }
+    }
 }
 
 /***********************************************************************************
@@ -924,89 +945,43 @@ static void _waitFence(KEGL_SYNC *psSync, SrvSysContext *psSysContext, EGLTimeKH
                       wait for up to timeout ns for a result to become available.
 ************************************************************************************/
 static EGLint IMGeglClientWaitSyncKHR_Fence(TLS psTls, KEGL_SYNC *psSync, EGLint flags, EGLTimeKHR timeout)
-{	
-	EGLint ret = EGL_FALSE;
-
+{
 #if !defined(EGL_EXTENSION_KHR_FENCE_SYNC)
-
-	PVR_UNREFERENCED_PARAMETER(psTls);
-	PVR_UNREFERENCED_PARAMETER(psSync);
-	PVR_UNREFERENCED_PARAMETER(flags);
-	PVR_UNREFERENCED_PARAMETER(timeout);
-
-#else /* !defined(EGL_EXTENSION_KHR_FENCE_SYNC) */
-
-	KEGL_CONTEXT *psCurrentContext = EGL_NO_CONTEXT;
-
-	PVR_ASSERT(psTls);
-	PVR_ASSERT(psSync);
-	
-	if(psSync->psContext == EGL_NO_CONTEXT)
-	{
-		return EGL_FALSE;
-	}
-
-	/* Flush the buffers using an API specific call to prevent lock-ups */
-	/* Spec states we should flush CURRENT context for current API */
-	if( (psSync->eglSyncStatus == EGL_UNSIGNALED_KHR) && (flags & EGL_SYNC_FLUSH_COMMANDS_BIT_KHR))
-	{
-		/* retrieve the current context for the current api */
-		psCurrentContext = psTls->apsCurrentContext[psTls->ui32API];
-
-		/* Only flush if there is a context */
-		if(psCurrentContext != EGL_NO_CONTEXT)
-		{
-			if(!_flushBuffers(psCurrentContext, psTls))
-			{
-				/* If flush fails and last error is set, bail out */
-				/* Otherwise it is just a case of no context or context that can't be flushed */
-				if(psTls->lastError != EGL_SUCCESS)
-				{
-					return EGL_FALSE;
-				}
-			}
-		}
-	}
-
-
-	/* Check the sync object and set the signalling state */
-	if(EGL_FENCE_SYNC_COMPLETE(&psTls->psGlobalData->sSysContext.s3D, psSync))
-	{
-		psSync->eglSyncStatus = EGL_SIGNALED_KHR;
-		ret = EGL_CONDITION_SATISFIED_KHR;
-		goto err_got_result;
-	}
-
-	/* If timeout is 0 then return the signaling state */
-	if(timeout == 0)
-	{
-		if(psSync->eglSyncStatus == EGL_SIGNALED_KHR)
-		{
-			ret = EGL_CONDITION_SATISFIED_KHR;
-		}
-		else
-		{
-			ret = EGL_TIMEOUT_EXPIRED_KHR;
-		}
-
-		goto err_got_result;
-	}
-
-	_waitFence(psSync, &psTls->psGlobalData->sSysContext, timeout);
-
-	if(psSync->eglSyncStatus == EGL_SIGNALED_KHR)
-	{
-		ret = EGL_CONDITION_SATISFIED_KHR;
-	}
-	else
-	{
-		ret = EGL_TIMEOUT_EXPIRED_KHR;
-	}
-
-err_got_result:
-#endif /* !defined(EGL_EXTENSION_KHR_FENCE_SYNC) */
-
-	return ret;
+    PVR_UNREFERENCED_PARAMETER(psTls);
+    PVR_UNREFERENCED_PARAMETER(psSync);
+    PVR_UNREFERENCED_PARAMETER(flags);
+    PVR_UNREFERENCED_PARAMETER(timeout);
+    return EGL_FALSE;
+#else
+    EGLint result;
+    EGLenum status;
+    KEGL_CONTEXT *current;
+    EGLThreadLock(psTls);
+    status = psSync->eglSyncStatus;
+    EGLThreadUnlock(psTls);
+    if(status == EGL_SIGNALED_KHR) return EGL_CONDITION_SATISFIED_KHR;
+    if(flags & EGL_SYNC_FLUSH_COMMANDS_BIT_KHR)
+    {
+        current = psTls->apsCurrentContext[psTls->ui32API];
+        if(current != EGL_NO_CONTEXT && !_flushBuffers(current, psTls))
+        {
+            if(psTls->lastError == EGL_SUCCESS) psTls->lastError = EGL_BAD_CONTEXT;
+            return EGL_FALSE;
+        }
+    }
+    result = _waitFence(psSync, &psTls->psGlobalData->sSysContext, timeout);
+    if(result == EGL_FALSE)
+    {
+        psTls->lastError = EGL_BAD_ACCESS;
+    }
+    else if(result == EGL_CONDITION_SATISFIED_KHR)
+    {
+        EGLThreadLock(psTls);
+        psSync->eglSyncStatus = EGL_SIGNALED_KHR;
+        EGLThreadUnlock(psTls);
+    }
+    return result;
+#endif
 }
 
 /***********************************************************************************
@@ -1222,6 +1197,16 @@ IMG_INTERNAL EGLBoolean	IMGeglGetSyncAttribKHR(EGLDisplay eglDpy, EGLSyncKHR syn
 		}
 		case EGL_SYNC_STATUS_KHR:
 		{
+            if(psSync->eglSyncType == EGL_SYNC_FENCE_KHR && psSync->eglSyncStatus == EGL_UNSIGNALED_KHR)
+            {
+                PVRSRV_ERROR result = _queryFence(&psTls->psGlobalData->sSysContext.s3D, psSync);
+                if(result == PVRSRV_OK) psSync->eglSyncStatus = EGL_SIGNALED_KHR;
+                else if(!_fencePending(result))
+                {
+                    psTls->lastError = EGL_BAD_ACCESS;
+                    goto err_down;
+                }
+            }
 			*pValue = psSync->eglSyncStatus;
 
 			break;

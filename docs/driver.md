@@ -20,6 +20,10 @@
 
 仍在使用的表面、深度/模板附件及共享上下文不参与这项自动回收。纹理存储仍占用内存，应用应及时释放不再需要的图像。
 
+## GPU 完成通知
+
+查询 `EGL_KHR_fence_sync` 后，用 `eglCreateSyncKHR` 在当前上下文插入完成标记。`eglClientWaitSyncKHR` 的零超时调用查询一次，有限超时按经过时间等待。应用应在完成后释放提交持有的资源。销毁尚未完成的 sync 会保留其底层存储，直至 GPU 与等待者都已结束。
+
 ## BC1 / BC3 纹理
 
 先查询扩展字符串中的 `GL_KRKR_texture_compression_bc`，再使用以下格式上传：

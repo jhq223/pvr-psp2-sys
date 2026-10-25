@@ -46,13 +46,13 @@ struct _KEGL_SYNC_
 #endif /* defined(EGL_EXTENSION_KHR_REUSABLE_SYNC) */
 };
 
-IMG_VOID TerminateSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext);
+EGLBoolean TerminateSyncs(KEGL_DISPLAY *psDpy, TLS psTls);
 
 EGLSyncKHR IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, const EGLint *piAttribList);
 
 EGLBoolean IMGeglDestroySyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync);
 
-EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR *sync, EGLint flags, EGLTimeKHR timeout);
+EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync, EGLint flags, EGLTimeKHR timeout);
 
 EGLBoolean IMGeglGetSyncAttribKHR(EGLDisplay eglDpy, EGLSyncKHR sync, EGLint attribute, EGLint *pValue);
 

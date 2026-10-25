@@ -9,6 +9,7 @@
 #include "eurasia/include4/sgxapi_km.h"
 #include "eurasia/services4/include/servicesint.h"
 #include "eurasia/services4/include/pvr_bridge.h"
+#include "eurasia/services4/include/sgx_bridge.h"
 
 IMG_RESULT PVRSRVBridgeCall(IMG_HANDLE hServices,
 	IMG_UINT32 ui32FunctionID,
@@ -31,6 +32,12 @@ IMG_RESULT PVRSRVBridgeCall(IMG_HANDLE hServices,
 	dispatchPacket.pvParamIn = pvParamIn;
 	dispatchPacket.ui32InBufferSize = ui32InBufferSize;
 	while (eError = PVRSRV_BridgeDispatchKM(ui32FunctionID, &dispatchPacket), eError == PVRSRV_ERROR_RETRY) {
+		/* A nonblocking completion query must return control to its caller. */
+		if (ui32FunctionID == PVRSRV_BRIDGE_SGX_2DQUERYBLTSCOMPLETE &&
+			!((PVRSRV_BRIDGE_IN_2DQUERYBLTSCOMPLETE *)pvParamIn)->bWaitForComplete)
+		{
+			break;
+		}
 		sceKernelDelayThread(201);
 	}
 

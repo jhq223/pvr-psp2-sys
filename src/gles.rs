@@ -177,6 +177,7 @@ unsafe extern "C" {
     pub fn eglDestroySurface(display: EGLDisplay, surface: EGLSurface) -> EGLBoolean;
     pub fn eglTerminate(display: EGLDisplay) -> EGLBoolean;
     pub fn eglGetError() -> EGLint;
+    pub fn eglQueryString(display: EGLDisplay, name: EGLint) -> *const c_char;
     pub fn eglGetProcAddress(name: *const c_char) -> *const c_void;
 
     pub fn glActiveTexture(texture: GLenum);

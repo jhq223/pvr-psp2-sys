@@ -1,8 +1,12 @@
-//! Raw bindings for the PlayStation Vita PVR graphics libraries.
+//! PlayStation Vita PVR bindings and owned native services.
 //!
 //! [`gles`] exposes EGL, OpenGL ES 2.0 and PVR application hints. The crate
 //! root exposes PVR2D types and functions. Calls retain the native libraries'
 //! initialization, threading, pointer validity and resource lifetime rules.
+//!
+//! The `platform`, `graphics` and `video` features expose owned Vita services
+//! with explicit thread affinity, bounded buffers and resource lifetimes.
+//! These modules use `std`; the raw bindings remain available with `no_std`.
 //!
 //! Vita builds link import stubs; applications must deploy and load the
 //! matching runtime modules separately. Building on another platform permits
@@ -13,6 +17,19 @@
 use core::ffi::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
 
 pub mod gles;
+
+#[cfg(feature = "std")]
+extern crate std;
+
+/// Thread-bound graphics resources and command submission.
+#[cfg(all(feature = "graphics", target_os = "vita"))]
+pub mod graphics;
+/// Owned native host services.
+#[cfg(all(feature = "platform", target_os = "vita"))]
+pub mod platform;
+/// Hardware movie decoding with owned source callbacks.
+#[cfg(all(feature = "video", target_os = "vita"))]
+pub mod video;
 
 pub type PVR2DERROR = c_int;
 pub type PVR2DFORMAT = c_ulong;
