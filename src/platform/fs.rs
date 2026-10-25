@@ -193,3 +193,26 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     // SAFETY: two stable NUL-terminated paths; no borrowed pointer is retained.
     checked(unsafe { sdk::sceIoRename(from.as_ptr(), to.as_ptr()) }).map(|_| ())
 }
+
+// VitaSDK newlib supplies the reentrant syscall but omits its POSIX wrapper.
+// Delegate to that syscall with the current thread's reentrancy state, preserving
+// its ENOSYS error for unsupported symbolic links and std's ordinary error path.
+unsafe extern "C" {
+    fn __getreent() -> *mut std::ffi::c_void;
+    fn _readlink_r(
+        reentrant: *mut std::ffi::c_void,
+        path: *const std::ffi::c_char,
+        output: *mut std::ffi::c_char,
+        length: usize,
+    ) -> isize;
+}
+#[unsafe(export_name = "readlink")]
+unsafe extern "C" fn readlink_compat(
+    path: *const std::ffi::c_char,
+    output: *mut std::ffi::c_char,
+    length: usize,
+) -> isize {
+    // SAFETY: caller supplies the POSIX readlink ABI; newlib owns the live,
+    // thread-local reentrancy record, and the syscall retains no pointer.
+    unsafe { _readlink_r(__getreent(), path, output, length) }
+}
