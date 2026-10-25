@@ -13,7 +13,17 @@ pvr-psp2-sys = { git = "https://github.com/jhq223/pvr-psp2-sys.git" }
 
 需要 Rust 1.95+ 和 VitaSDK。构建时使用 `arm-vita-eabi-gcc`、`arm-vita-eabi-ar`；也可通过 `TARGET_CC`、`TARGET_AR` 指定路径。
 
-PVR2D 接口位于 crate 根模块，EGL 和 GLES2 接口位于 `gles` 模块。绑定使用 `no_std`，调用方式与 C API 一致。
+PVR2D 接口位于 crate 根模块，EGL 和 GLES2 接口位于 `gles` 模块。原始绑定使用 `no_std`，调用方式与 C API 一致。
+
+可选的 `std` 接口按所有权管理原生资源：
+
+| Feature | 接口 |
+| --- | --- |
+| `platform` | 控制器、触摸、电源通知、事件等待、AudioOut 和文件 IO |
+| `graphics` | EGL 上下文、纹理、着色器程序、绘制和 GPU fence |
+| `video` | 从可定位的数据流读取并硬解 H.264/AAC，原生分配接入调用者的内存额度 |
+
+接口文档位于对应 Rust 声明旁。
 
 ## 部署
 
@@ -63,4 +73,5 @@ cargo clippy --all-targets -- -D warnings
 ```sh
 cargo run --example pvr-native-check -- allocators . target/pvr-allocator-tests
 cargo run --example pvr-native-check -- optimizations . target/pvr-optimization-tests
+cargo run --example pvr-native-check -- fences . target/pvr-fence-tests
 ```

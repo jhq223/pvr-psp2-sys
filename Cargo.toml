@@ -16,6 +16,10 @@ exclude = ["**/*.vcxproj.user", "**/*.suo", "target/**"]
 [features]
 # Rebuild all four native modules using the official Windows PSVSDK.
 build-driver = []
+std = []
+platform = ["std", "dep:vitasdk-sys"]
+graphics = ["std", "dep:glow", "dep:vitasdk-sys"]
+video = ["platform"]
 
 [[example]]
 name = "pvr-native-check"
@@ -32,3 +36,11 @@ warnings = "deny"
 [[test]]
 name = "compiler_sync"
 path = "native/tests/compiler_sync.rs"
+
+[target.'cfg(target_os = "vita")'.dependencies]
+glow = { version = "=0.18.0", optional = true }
+vitasdk-sys = { version = "=0.3.3", optional = true, features = ["SceLibKernel_stub", "SceKernelThreadMgr_stub", "SceProcessmgr_stub", "SceRtc_stub", "SceCtrl_stub", "SceTouch_stub", "ScePower_stub", "SceAudio_stub", "SceIofilemgr_stub", "SceKernelModulemgr_stub", "SceSysmodule_stub", "SceSysmem_stub", "SceAvPlayer_stub", "SceDisplay_stub", "SceKernelDmacMgr_stub", "SceAppMgr_stub"] }
+
+[[test]]
+name = "video_contracts"
+path = "native/tests/video_contracts.rs"
