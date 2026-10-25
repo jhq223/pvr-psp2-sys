@@ -10,6 +10,7 @@ typedef struct { int value; } PVRSRV_CLIENT_SYNC_INFO;
 typedef struct { PVRSRV_CLIENT_SYNC_INFO *psClientSyncInfo; } PVRSRV_CLIENT_MEM_INFO;
 typedef struct { void *hPerProcRef; } SrvSysContext;
 #define IMG_EXPORT
+#define PVR_UNREFERENCED_PARAMETER(x) ((void)(x))
 #define IMG_CALLCONV
 #define IMG_NULL NULL
 #define IMG_TRUE 1
@@ -20,7 +21,8 @@ typedef struct { void *hPerProcRef; } SrvSysContext;
 #define sceClibPrintf(...) ((void)0)
 #define PVRSRV_HAP_NO_GPU_VIRTUAL_ON_ALLOC 2
 
-static int fail_memory, fail_sync, fail_free, memory_count, sync_count;
+static int fail_memory, fail_sync, fail_free, fail_sync_free, memory_count, sync_count;
+static unsigned memory_free_calls, sync_free_calls;
 static int PVRSRVAllocDeviceMem(PVRSRV_DEV_DATA *dev, void *heap, unsigned flags,
                                unsigned bytes, unsigned alignment, void *reference,
                                PVRSRV_CLIENT_MEM_INFO **out)
@@ -45,6 +47,7 @@ static int PVRSRVAllocSyncInfo(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_SYNC_INFO **o
 static int PVRSRVFreeDeviceMem(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_MEM_INFO *info)
 {
     (void)dev;
+    memory_free_calls++;
     if (fail_free) return -30;
     assert(memory_count == 1);
     free(info); /* ASan detects any subsequent descriptor access. */
@@ -54,11 +57,15 @@ static int PVRSRVFreeDeviceMem(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_MEM_INFO *inf
 static int PVRSRVFreeSyncInfo(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_SYNC_INFO *info)
 {
     (void)dev;
+    sync_free_calls++;
+    if (fail_sync_free) return -40;
     assert(sync_count == 1);
     free(info);
     sync_count--;
     return 0;
 }
+
+#include "../../vendor/PVR_PSP2/eurasiacon/imgegl/imgegl/device_mem_free.h"
 
 /* Extracted unchanged from the driver's srv.c by the Rust host checker. */
 #include "device_mem_functions.inc"
@@ -85,7 +92,7 @@ int main(void)
         assert(memory_count == 1 && sync_count == 1);
         fail_free = 1;
         assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -30);
-        assert(memory_count == 1 && sync_count == 1);
+        assert(memory_count == 1 && !sync_count && !info->psClientSyncInfo);
         fail_free = 0;
         assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
         assert(!memory_count && !sync_count);
@@ -93,6 +100,24 @@ int main(void)
         assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
         assert(!memory_count && !sync_count);
     }
+    /* Neither a failed sync release nor a subsequent failed allocation
+     * release can leave the caller holding a freed descriptor. */
+    assert(!KEGLAllocDeviceMemPsp2(&context, &dev, NULL, 0, 4, 4, &info));
+    unsigned before_memory = memory_free_calls, before_sync = sync_free_calls;
+    PVRSRV_CLIENT_SYNC_INFO *original_sync = info->psClientSyncInfo;
+    fail_sync_free = 1;
+    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -40);
+    assert(memory_free_calls == before_memory && sync_free_calls == before_sync + 1);
+    assert(memory_count == 1 && sync_count == 1 && info->psClientSyncInfo == original_sync);
+    fail_sync_free = 0;
+    fail_free = 1;
+    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -30);
+    assert(memory_free_calls == before_memory + 1 && sync_free_calls == before_sync + 2);
+    assert(memory_count == 1 && !sync_count && !info->psClientSyncInfo);
+    fail_free = 0;
+    assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
+    assert(memory_free_calls == before_memory + 2 && sync_free_calls == before_sync + 2);
+    assert(!memory_count && !sync_count);
     /* Even with sync quota exhausted, both command stores remain allocatable;
      * a required surface sync must still fail and roll back its allocation. */
     fail_sync = 1;

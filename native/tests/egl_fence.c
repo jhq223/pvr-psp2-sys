@@ -59,6 +59,7 @@ static void PVRSRVPostSemaphore(void *sem, uint32_t count) { (void)sem; assert(c
 static uint64_t clock_us, slept_us;
 static unsigned queries, sleeps, complete_at, memory_frees, sync_frees, sem_frees;
 static PVRSRV_ERROR query_error;
+static int fail_memory_free;
 static PVRSRV_ERROR SGX2DQueryBlitsComplete(PVRSRV_DEV_DATA *device, void *sync, IMG_BOOL wait) {
     (void)device; assert(sync != NULL); assert(wait == IMG_FALSE);
     ++queries;
@@ -66,7 +67,15 @@ static PVRSRV_ERROR SGX2DQueryBlitsComplete(PVRSRV_DEV_DATA *device, void *sync,
 }
 static IMG_UINT32 PVRSRVClockus(void) { return (IMG_UINT32)clock_us; }
 static void PVRSRVWaitus(IMG_UINT32 delay) { assert(delay > 0 && delay <= 1000); ++sleeps; slept_us += delay; clock_us += delay; if(wait_hook) wait_hook(); }
-static PVRSRV_ERROR IMGEGLFREEDEVICEMEM(PVRSRV_DEV_DATA *device, struct SyncMemory *memory) { (void)device; ++memory_frees; free(memory); return PVRSRV_OK; }
+static PVRSRV_ERROR IMGEGLFREEDEVICEMEM(PVRSRV_DEV_DATA *device, struct SyncMemory *memory) {
+    (void)device;
+    /* The owned sync was freed, but the allocation remains retryable. */
+    if (fail_memory_free) {
+        memory->psClientSyncInfo = NULL;
+        return PVRSRV_ERROR_BRIDGE_CALL_FAILED;
+    }
+    ++memory_frees; free(memory); return PVRSRV_OK;
+}
 static void PVRSRVDestroySemaphore(void *semaphore) { (void)semaphore; ++sem_frees; }
 static void EGLFree(void *sync) { ++sync_frees; free(sync); }
 #define EGL_FENCE_SYNC_COMPLETE(device,sync) _syncComplete(device,sync)
@@ -129,6 +138,18 @@ int main(void) {
     complete_at=1;
     assert(TerminateSyncs(&display,&tls)==EGL_TRUE);
     EGLThreadUnlock(&tls);
+    reset(); sync=make_sync(&display,EGL_SYNC_FENCE_KHR);
+    sync->bIsDeleting=EGL_TRUE; complete_at=1; fail_memory_free=1;
+    unsigned frees_before=memory_frees;
+    _cleanupSyncs(&display,&context);
+    assert(display.psHeadSync==sync && memory_frees==frees_before);
+    assert(sync->eglSyncStatus==EGL_SIGNALED_KHR);
+    assert(sync->psSyncMemInfo->psClientSyncInfo==NULL);
+    unsigned queries_before=queries;
+    fail_memory_free=0;
+    _cleanupSyncs(&display,&context);
+    assert(display.psHeadSync==NULL && memory_frees==frees_before+1);
+    assert(queries==queries_before);
     puts("EGL fence: nonblocking query, deadlines, clock wrap, errors and deferred ownership verified");
     return 0;
 }
