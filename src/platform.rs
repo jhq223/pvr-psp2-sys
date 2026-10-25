@@ -3,6 +3,7 @@ use std::prelude::v1::*;
 pub(crate) use vitasdk_sys as sdk;
 pub mod audio;
 pub mod fs;
+pub mod ime;
 pub mod input;
 pub mod memory;
 pub mod power;
