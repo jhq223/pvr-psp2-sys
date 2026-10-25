@@ -13,6 +13,7 @@
 #include "srv.h"
 #include "sgxmmu.h"
 #include "string.h"
+#include "device_mem_free.h"
 #if defined(DEBUG)
 #	include "tls.h"
 #endif
@@ -605,15 +606,12 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLFreeDeviceMemTrack(SrvSysContext *psSys
 
 	if(bFound)
 	{
-		eError = PVRSRVFreeDeviceMem(psDevData, psMemInfo);
-
-		if (psMemInfo->psClientSyncInfo)
+		eError = KEGLFreeOwnedDeviceMem(psDevData, psMemInfo);
+		if(eError == PVRSRV_OK)
 		{
-			PVRSRVFreeSyncInfo(psDevData, psMemInfo->psClientSyncInfo);
+			/* Remove tracking only after both release phases succeeded. */
+			psSysContext->psDevMemAllocations[ui32PointerPosition] = psSysContext->psDevMemAllocations[--psSysContext->ui32CurrentAllocations];
 		}
-
-		/* Replace the freed pointer with the last pointer in the array of allocations */
-		psSysContext->psDevMemAllocations[ui32PointerPosition] = psSysContext->psDevMemAllocations[--psSysContext->ui32CurrentAllocations];
 	}
 	else
 	{
@@ -718,18 +716,8 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemPsp2(SrvSysContext *psSys
 IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLFreeDeviceMemPsp2(SrvSysContext *psSysContext,
 	PVRSRV_DEV_DATA	*psDevData, PVRSRV_CLIENT_MEM_INFO *psMemInfo)
 {
-	PVRSRV_ERROR eError;
-	PVRSRV_CLIENT_SYNC_INFO *psSyncInfo = psMemInfo->psClientSyncInfo;
-
-	eError = PVRSRVFreeDeviceMem(psDevData, psMemInfo);
-
-	/* The descriptor is no longer valid after FreeDeviceMem succeeds. */
-	if (eError == PVRSRV_OK && psSyncInfo)
-	{
-		eError = PVRSRVFreeSyncInfo(psDevData, psSyncInfo);
-	}
-
-	return eError;
+	PVR_UNREFERENCED_PARAMETER(psSysContext);
+	return KEGLFreeOwnedDeviceMem(psDevData, psMemInfo);
 }
 #endif /* defined(DEBUG) */
 

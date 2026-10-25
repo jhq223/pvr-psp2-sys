@@ -64,7 +64,21 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         &source[start..end],
     )
     .map_err(|e| e.to_string())?;
-    for name in ["render_target_alloc", "device_mem", "program_switch"] {
+    let source = fs::read_to_string(root.join("vendor/PVR_PSP2/eurasiacon/opengles2/misc.c"))
+        .map_err(|e| e.to_string())?
+        .replace("\r\n", "\n");
+    let start = source
+        .find("GL_APICALL void GL_APIENTRY glFinish(void)")
+        .ok_or("missing glFinish")?;
+    let end = start + source[start..].find("\n}").ok_or("unterminated glFinish")? + 2;
+    fs::write(output.join("finish_function.inc"), &source[start..end])
+        .map_err(|e| e.to_string())?;
+    for name in [
+        "render_target_alloc",
+        "device_mem",
+        "program_switch",
+        "finish",
+    ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         run(Command::new(compiler)
             .args([

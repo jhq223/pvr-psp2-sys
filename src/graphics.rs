@@ -974,27 +974,90 @@ impl Context {
 fn float_bytes(value: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), std::mem::size_of_val(value)) }
 }
-#[cfg(target_os = "vita")]
+#[cfg(any(target_os = "vita", test))]
 fn reorder_blocks(size: [u32; 2], bytes: usize, input: &[u8], output: &mut [u8]) {
     let width = size[0] / 4;
     let height = size[1] / 4;
-    for y in 0..height {
-        for x in 0..width {
-            let mut index = 0usize;
-            let mut bit = 0;
-            for axis in 0..width.ilog2().max(height.ilog2()) {
-                if axis < height.ilog2() {
-                    index |= (((y >> axis) & 1) as usize) << bit;
-                    bit += 1;
+    let width_bits = width.ilog2();
+    let height_bits = height.ilog2();
+    let (mut x_mask, mut y_mask, mut bit) = (0usize, 0usize, 0);
+    for axis in 0..width_bits.max(height_bits) {
+        if axis < height_bits {
+            y_mask |= 1 << bit;
+            bit += 1;
+        }
+        if axis < width_bits {
+            x_mask |= 1 << bit;
+            bit += 1;
+        }
+    }
+    x_mask *= bytes;
+    y_mask *= bytes;
+    let (mut source, mut row) = (0usize, 0usize);
+    // Advance only this axis's Morton bits. After the shorter axis runs out,
+    // the longer axis continues in the upper bits of the same byte offset.
+    for _ in 0..height {
+        let mut column = 0usize;
+        for _ in 0..width {
+            let destination = row | column;
+            output[destination..destination + bytes]
+                .copy_from_slice(&input[source..source + bytes]);
+            source += bytes;
+            column = column.wrapping_sub(x_mask) & x_mask;
+        }
+        row = row.wrapping_sub(y_mask) & y_mask;
+    }
+}
+
+#[cfg(test)]
+mod texture_reorder_tests {
+    use super::reorder_blocks;
+    use std::vec;
+
+    #[test]
+    fn rectangular_bc_blocks_preserve_row_major_content() {
+        for size in [
+            [8, 8],
+            [8, 512],
+            [512, 16],
+            [1024, 256],
+            [1024, 1024],
+            [512, 2048],
+        ] {
+            for bytes in [8, 16] {
+                let (width, height) = (size[0] / 4, size[1] / 4);
+                let length = width as usize * height as usize * bytes;
+                let mut source = vec![0; length];
+                for (index, block) in source.chunks_exact_mut(bytes).enumerate() {
+                    for word in block.chunks_exact_mut(8) {
+                        word.copy_from_slice(&(index as u64).to_le_bytes());
+                    }
                 }
-                if axis < width.ilog2() {
-                    index |= (((x >> axis) & 1) as usize) << bit;
-                    bit += 1;
+                let mut actual = vec![0xff; length];
+                reorder_blocks(size, bytes, &source, &mut actual);
+                // Direct bit interleaving is the previous address oracle.
+                for y in 0..height {
+                    for x in 0..width {
+                        let (mut destination, mut bit) = (0usize, 0);
+                        for axis in 0..width.ilog2().max(height.ilog2()) {
+                            if axis < height.ilog2() {
+                                destination |= (((y >> axis) & 1) as usize) << bit;
+                                bit += 1;
+                            }
+                            if axis < width.ilog2() {
+                                destination |= (((x >> axis) & 1) as usize) << bit;
+                                bit += 1;
+                            }
+                        }
+                        let linear = (y as usize * width as usize + x as usize) * bytes;
+                        assert_eq!(
+                            actual[destination * bytes..(destination + 1) * bytes],
+                            source[linear..linear + bytes],
+                            "{size:?}, {bytes}-byte blocks, ({x}, {y})",
+                        );
+                    }
                 }
             }
-            let source = (y as usize * width as usize + x as usize) * bytes;
-            output[index * bytes..(index + 1) * bytes]
-                .copy_from_slice(&input[source..source + bytes]);
         }
     }
 }
