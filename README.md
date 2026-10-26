@@ -29,13 +29,13 @@ PVR2D 接口位于 crate 根模块，EGL 和 GLES2 接口位于 `gles` 模块。
 
 启用 `graphics` 后，`graphics::Context::headless([960, 544], false)` 使用主机 EGL 创建 RGBA8 pbuffer，并复用 Vita 的纹理、绘制和 fence 接口。主机需提供 EGL 1.4、OpenGL ES 2.0 和 `EGL_KHR_fence_sync`。Linux 加载 `libEGL.so.1`，Windows 加载 `libEGL.dll`。
 
-PC 通过 `ShaderCode::Source` 编译 GLSL ES，通过标准 S3TC 上传 BC1/BC3；Vita 继续使用 SGX 二进制、原生压缩格式和块重排。`driver_info()` 返回实际驱动信息。pbuffer 的交换间隔不负责限帧，测量用 fence 等待提交完成。
+PC 通过 `ShaderCode::Source` 编译 GLSL ES，通过标准 S3TC 上传 BC1/BC3；Vita 继续使用 SGX 二进制、原生压缩格式和块重排。`driver_info()` 返回实际驱动信息。pbuffer 测量通过 fence 等待提交完成；应用自行控制帧率。
 
 ```sh
 cargo test --locked --offline --features graphics --test graphics -- --ignored --test-threads=1 --nocapture
 ```
 
-该检查创建实际上下文，执行上传、绘制、交换与 fence，验证资源持有及关闭后重建。它不创建窗口或读取像素；记录的是主机驱动成本。
+该检查使用离屏上下文执行上传、绘制、交换与 fence，记录主机驱动耗时，并验证资源持有及关闭后重建。
 
 WSL 使用已安装的 Mesa D3D12 驱动时，可在相同命令前设置以下环境。`LD_PRELOAD` 使 D3D12 代码库覆盖线程退出清理阶段，纹理、上下文和 surface 仍显式释放。
 
@@ -44,7 +44,6 @@ EGL_PLATFORM=surfaceless GALLIUM_DRIVER=d3d12 \
 LD_PRELOAD=/usr/lib/wsl/lib/libd3d12core.so \
 cargo test --locked --offline --release --features graphics --test graphics -- --ignored --test-threads=1 --nocapture
 ```
-
 
 ## 部署
 
