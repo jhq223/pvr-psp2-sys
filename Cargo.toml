@@ -53,3 +53,7 @@ path = "native/tests/video_contracts.rs"
 [[test]]
 name = "gamma_metadata"
 path = "native/tests/gamma_metadata.rs"
+
+[[test]]
+name = "sample_state"
+path = "native/tests/sample_state.rs"

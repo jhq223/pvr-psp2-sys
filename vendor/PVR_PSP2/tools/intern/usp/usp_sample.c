@@ -1956,8 +1956,13 @@ static IMG_BOOL SampleTextureData(PUSP_SAMPLE		psSample,
 				*/
 				psHWInst = &psSample->asSampleInsts_[uHWInstCount];
 
+				/*
+					Implicit-gradient samples also execute for invalid pixels. The
+					state load must cover the encoded sample's execution mask, even
+					when its result descriptor permits skipping invalid pixels.
+				*/
 				if	(!HWInstEncodeLDInst(psHWInst,
-										 bSkipInv,
+										 (IMG_BOOL)((psSample->sBaseInst.uWord1 & EURASIA_USE1_SKIPINV) != 0),
 										 psTexStateData->uRegCount,
 										 psTexStateReg,
 										 &sBaseAddrReg,
