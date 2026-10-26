@@ -51,7 +51,7 @@ fn headless_upload_draw_fence_and_lifetime() {
             &[AttributeBinding { location: 0, name: "pos" }],
         ).unwrap();
         let sampler = program.uniform("image").unwrap();
-        let vertices = context
+        let mut vertices = context
             .vertex_buffer(
                 &[-1., -1., 1., -1., 1., 1., -1., -1., 1., 1., -1., 1.],
                 2,
@@ -88,6 +88,49 @@ fn headless_upload_draw_fence_and_lifetime() {
             "submitted GPU work must complete"
         );
         assert!(fence.poll().unwrap());
+        let mut indices = context.index_buffer(&[0, 1, 2, 3, 4, 5]).unwrap();
+        context
+            .update_vertices(&mut vertices, &[-1., -1., 1., -1., 1., 1.])
+            .unwrap();
+        context.update_indices(&mut indices, &[0, 1, 2]).unwrap();
+        assert!(context.update_vertices(&mut vertices, &[0.; 14]).is_err());
+        assert!(context.update_vertices(&mut vertices, &[0.; 3]).is_err());
+        assert!(context.update_indices(&mut indices, &[0; 7]).is_err());
+        context
+            .draw(Draw {
+                target: Target::Screen,
+                size,
+                program: &program,
+                vertices: &vertices,
+                indices: Some(&indices),
+                range: 0..3,
+                textures: &[&texture],
+                uniforms: &[UniformValue::Int(&sampler, 0)],
+                blend: Blend::Replace,
+                scissor: None,
+            })
+            .unwrap();
+        // The active index extent shrinks with the update, despite retained capacity.
+        assert!(
+            context
+                .draw(Draw {
+                    target: Target::Screen,
+                    size,
+                    program: &program,
+                    vertices: &vertices,
+                    indices: Some(&indices),
+                    range: 0..6,
+                    textures: &[&texture],
+                    uniforms: &[UniformValue::Int(&sampler, 0)],
+                    blend: Blend::Replace,
+                    scissor: None,
+                })
+                .is_err()
+        );
+        let updated = context.fence().unwrap();
+        context.flush().unwrap();
+        assert!(updated.wait(Duration::from_secs(5)).unwrap());
+        drop((updated, indices));
         println!(
             "pbuffer={size:?} completed_frames=120 elapsed_us={}",
             start.elapsed().as_micros()

@@ -709,6 +709,7 @@ impl Context {
             owner: self.0.clone(),
             name,
             count: data.len() / stride as usize,
+            capacity: data.len(),
             stride,
             attributes: attributes.to_vec(),
         };
@@ -741,6 +742,7 @@ impl Context {
             owner: self.0.clone(),
             name,
             count: indices.len(),
+            capacity: indices.len(),
             maximum: indices.iter().copied().max().unwrap_or(0),
         };
         unsafe {
@@ -757,6 +759,51 @@ impl Context {
         }
         self.check("index upload")?;
         Ok(out)
+    }
+    /// Replace active vertices within the original allocation and layout.
+    /// Reuse completed submissions to avoid an implicit driver wait. Allocation
+    /// capacity is unchanged; draws are validated against the new active count.
+    pub fn update_vertices(&self, buffer: &mut VertexBuffer, data: &[f32]) -> Result<()> {
+        self.open()?;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || data.len() > buffer.capacity
+            || !data.len().is_multiple_of(buffer.stride as usize)
+        {
+            return Err(Error::Invalid("vertex update extent or owner"));
+        }
+        unsafe {
+            self.0.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, float_bytes(data));
+        }
+        self.check("vertex update")?;
+        buffer.count = data.len() / buffer.stride as usize;
+        Ok(())
+    }
+    /// Replace active u32 indices without reallocating their storage. The maximum
+    /// index and active count are updated together after a successful upload.
+    pub fn update_indices(&self, buffer: &mut IndexBuffer, indices: &[u32]) -> Result<()> {
+        self.open()?;
+        if !Rc::ptr_eq(&self.0, &buffer.owner) || indices.len() > buffer.capacity {
+            return Err(Error::Invalid("index update extent or owner"));
+        }
+        unsafe {
+            self.0
+                .gl
+                .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.name));
+            let data = std::slice::from_raw_parts(
+                indices.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(indices),
+            );
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, 0, data);
+        }
+        self.check("index update")?;
+        buffer.count = indices.len();
+        buffer.maximum = indices.iter().copied().max().unwrap_or(0);
+        Ok(())
     }
     pub fn clear(&self, target: Target<'_>, color: [f32; 4]) -> Result<()> {
         self.bind_target(target)?;
@@ -1219,6 +1266,7 @@ pub struct VertexBuffer {
     owner: Rc<Inner>,
     name: glow::NativeBuffer,
     count: usize,
+    capacity: usize,
     stride: u32,
     attributes: Vec<VertexAttribute>,
 }
@@ -1233,6 +1281,7 @@ pub struct IndexBuffer {
     owner: Rc<Inner>,
     name: glow::NativeBuffer,
     count: usize,
+    capacity: usize,
     maximum: u32,
 }
 impl Drop for IndexBuffer {
