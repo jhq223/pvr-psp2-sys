@@ -49,3 +49,7 @@ vitasdk-sys = { version = "=0.3.3", optional = true, features = ["SceLibKernel_s
 [[test]]
 name = "video_contracts"
 path = "native/tests/video_contracts.rs"
+
+[[test]]
+name = "gamma_metadata"
+path = "native/tests/gamma_metadata.rs"

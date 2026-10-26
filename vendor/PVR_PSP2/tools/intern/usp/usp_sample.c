@@ -111,7 +111,11 @@ static IMG_VOID CalcTexChanBitCountAndFmt(PUSP_TEX_CHAN_FORMAT	psTexForm,
 	{
 		if	(eChanForm == USP_CHAN_FORMAT_U8)
 		{
+#if defined(SGX_FEATURE_TAG_GAMMA_UNPACK_TO_F16)
+			eChanForm		= USP_CHAN_FORMAT_F16;
+#else
 			eChanForm		= USP_CHAN_FORMAT_U16;
+#endif
 			uChanBitCount	= 16;
 		}
 	}
@@ -16573,7 +16577,7 @@ static IMG_VOID SetTextureChanFlags(PUSP_CONTEXT			psContext,
 		psContext->asSamplerDesc[uTexIdx].bAnisoEnabled;
 	
 	psSampChanDesc->bGammaEnabled = 
-		psContext->asSamplerDesc[uTexIdx].bAnisoEnabled;
+		psContext->asSamplerDesc[uTexIdx].bGammaEnabled;
 }
 
 #if defined(SGX_FEATURE_TAG_SWIZZLE)
