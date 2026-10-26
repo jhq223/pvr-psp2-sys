@@ -329,6 +329,7 @@ impl Context {
             name,
             size,
             format,
+            filter: Cell::new(TextureFilter::Linear),
         }));
         unsafe {
             let gl = &self.0.gl;
@@ -423,6 +424,7 @@ impl Context {
             name,
             size,
             format,
+            filter: Cell::new(TextureFilter::Linear),
         }));
         unsafe {
             let gl = &self.0.gl;
@@ -816,8 +818,17 @@ impl Context {
         }
         self.check("clear")
     }
-    /// Bind all typed state for one draw; no client pointers or GL names escape.
+    /// Draw with linear filtering, including after a preceding nearest-filtered
+    /// draw. No client pointers or GL names escape.
     pub fn draw(&self, draw: Draw<'_>) -> Result<()> {
+        self.draw_filtered(draw, TextureFilter::Linear)
+    }
+    /// Bind one hardware filtering mode for all sampled textures in this draw.
+    ///
+    /// Filtering belongs to the draw, not the immutable texture cache identity.
+    /// Texture state is updated only when its mode changes. Subsequent ordinary
+    /// `draw` calls explicitly restore linear filtering for internal consumers.
+    pub fn draw_filtered(&self, draw: Draw<'_>, filter: TextureFilter) -> Result<()> {
         self.same(&draw.program.0.owner)?;
         self.same(&draw.vertices.owner)?;
         self.validate_size(draw.size)?;
@@ -877,6 +888,17 @@ impl Context {
             for (unit, texture) in draw.textures.iter().enumerate() {
                 gl.active_texture(glow::TEXTURE0 + unit as u32);
                 gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
+                if texture.0.filter.get() != filter {
+                    let mode = match filter {
+                        TextureFilter::Nearest => glow::NEAREST,
+                        TextureFilter::Linear => glow::LINEAR,
+                    };
+                    // The validated texture belongs to this current context.
+                    // GLES2 stores min/mag filtering on the texture object.
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, mode as i32);
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, mode as i32);
+                    texture.0.filter.set(filter);
+                }
             }
             for uniform in draw.uniforms {
                 self.uniform(draw.program, *uniform)?;
@@ -1137,6 +1159,7 @@ struct TextureInner {
     name: glow::NativeTexture,
     size: [u32; 2],
     format: TextureFormat,
+    filter: Cell<TextureFilter>,
 }
 impl Drop for TextureInner {
     fn drop(&mut self) {
@@ -1290,6 +1313,14 @@ impl Drop for IndexBuffer {
             self.owner.gl.delete_buffer(self.name);
         }
     }
+}
+/// Hardware minification and magnification filtering for a sampled draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureFilter {
+    /// Select the nearest texel without interpolation.
+    Nearest,
+    /// Interpolate adjacent texels in both texture axes.
+    Linear,
 }
 #[derive(Clone, Copy)]
 pub enum Blend {
