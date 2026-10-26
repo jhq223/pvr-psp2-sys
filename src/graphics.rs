@@ -1170,6 +1170,14 @@ impl Drop for TextureInner {
 }
 #[derive(Clone)]
 pub struct Texture(Rc<TextureInner>);
+impl PartialEq for Texture {
+    /// Compare the owned allocation without querying GL or exposing native handles.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Texture {}
+
 impl Texture {
     pub fn size(&self) -> [u32; 2] {
         self.0.size
