@@ -12,52 +12,15 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+mod memory;
+mod types;
+pub use memory::{DriverMemoryUsage, HeapMemoryUsage, TargetFootprint, TargetLayout};
+pub use types::{Capabilities, CompletionMode, DriverInfo, Error};
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// GPU command completion supplied by the active EGL driver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompletionMode {
-    Fence,
-}
-/// Native failures retain their operation and actual device error.
-#[derive(Debug)]
-pub enum Error {
-    Invalid(&'static str),
-    Unsupported(&'static str),
-    Library {
-        library: &'static str,
-        message: String,
-    },
-    Sdk(&'static str, i32),
-    Egl(&'static str, i32),
-    Gl(&'static str, u32),
-    Shader {
-        stage: &'static str,
-        log: String,
-    },
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for Error {}
 type Result<T> = std::result::Result<T, Error>;
 
-/// Capabilities queried once from this context's actual driver.
-#[derive(Clone, Debug)]
-pub struct Capabilities {
-    pub max_texture_size: u32,
-    pub max_texture_units: u32,
-    pub max_vertex_attributes: u32,
-    pub max_fragment_uniform_vectors: u32,
-    pub bc: bool,
-    pub bgra: bool,
-    pub half_float: bool,
-    pub indices_u32: bool,
-    pub shader_binary: bool,
-    pub completion: CompletionMode,
-}
 #[cfg(target_os = "vita")]
 #[path = "graphics/native_vita.rs"]
 mod native;
@@ -76,20 +39,13 @@ struct FenceApi {
     destroy: DestroySync,
     wait: WaitSync,
 }
-/// Driver strings queried from the current OpenGL ES context.
-#[derive(Clone, Debug)]
-pub struct DriverInfo {
-    pub vendor: String,
-    pub renderer: String,
-    pub version: String,
-    pub shading_language: String,
-}
 struct Inner {
     gl: glow::Context,
     caps: Capabilities,
     native: Native,
     vsync: Cell<bool>,
     fences: FenceApi,
+    memory: Option<memory::Api>,
     enabled_attributes: Vec<Cell<bool>>,
 }
 /// An owned GPU command fence; polling performs one native nonblocking query.
@@ -197,6 +153,7 @@ impl Context {
                 completion: CompletionMode::Fence,
             }
         };
+        let memory = memory::Api::load(&native);
         let context = Self(Rc::new(Inner {
             enabled_attributes: (0..caps.max_vertex_attributes)
                 .map(|_| Cell::new(false))
@@ -206,6 +163,7 @@ impl Context {
             native,
             vsync: Cell::new(vsync),
             fences,
+            memory,
         }));
         context.check("context initialization")?;
         Ok(context)
@@ -451,13 +409,25 @@ impl Context {
             gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
             #[cfg(target_os = "vita")]
             gl.compressed_tex_image_2d(
-                glow::TEXTURE_2D, 0, format, size[0] as i32, size[1] as i32,
-                0, payload.len() as i32, payload,
+                glow::TEXTURE_2D,
+                0,
+                format,
+                size[0] as i32,
+                size[1] as i32,
+                0,
+                payload.len() as i32,
+                payload,
             );
             #[cfg(not(target_os = "vita"))]
             gl.compressed_tex_sub_image_2d(
-                glow::TEXTURE_2D, 0, 0, 0, size[0] as i32, size[1] as i32,
-                format as u32, glow::CompressedPixelUnpackData::Slice(payload),
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                size[0] as i32,
+                size[1] as i32,
+                format as u32,
+                glow::CompressedPixelUnpackData::Slice(payload),
             );
         }
         self.check("compressed texture replacement")
@@ -1292,7 +1262,7 @@ mod texture_reorder_tests {
                 let length = width as usize * height as usize * bytes;
                 let mut source = vec![0; length];
                 for (index, block) in source.chunks_exact_mut(bytes).enumerate() {
-                    for word in block.chunks_exact_mut(8) {
+                    for word in block.as_chunks_mut::<8>().0 {
                         word.copy_from_slice(&(index as u64).to_le_bytes());
                     }
                 }

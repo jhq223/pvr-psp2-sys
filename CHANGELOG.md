@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- `graphics::Context::target_layout` 以固定 STRIDE 行距计算 RGBA8 色彩存储，`target_footprint` 显式查询同参数 GXM RTData 大小；`memory_usage` 分别采样纹理堆保留/使用、已注册存储、RTData 实际映射及设备子分配。计数随真实分配/释放成功更新，历史峰值分域保留。两个诊断 getter 通过现有 proc-address 表加载，运行模块需同步重建。
+
 - `graphics::Context::upload_bc_texture` 校验并完整替换 BC1/BC3 内容；共用首次上传的块布局校验与 Vita 重排，供已完成使用的同格式纹理复用。
 - 原生 BC1/BC3 同格式、同尺寸的完整替换在传输与 GPU 使用均已完成时复用设备存储；其余情况保留原分配和 ghost 路径。应用需随包更新重新构建的 `libGLESv2.suprx`。
 

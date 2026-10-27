@@ -72,6 +72,11 @@ static int sceKernelFreeMemBlock(int uid)
     return 0;
 }
 
+static int KrkrAllocRenderTargetBlock(SrvSysContext *context, const char *name, unsigned bytes)
+{ (void)context; return sceKernelAllocMemBlock(name, SCE_KERNEL_MEMBLOCK_TYPE_USER_NC_RW, bytes, NULL); }
+static int KrkrFreeRenderTargetBlock(SrvSysContext *context, int uid)
+{ (void)context; return sceKernelFreeMemBlock(uid); }
+
 #include "../../vendor/PVR_PSP2/eurasiacon/imgegl/imgegl/render_target_alloc.h"
 
 int main(void)

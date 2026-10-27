@@ -79,6 +79,7 @@ set(libIMGEGL_SOURCES
     "eurasiacon/imgegl/imgegl/metrics.c"
     "eurasiacon/imgegl/imgegl/qsort_s.c"
     "eurasiacon/imgegl/imgegl/srv.c"
+    "eurasiacon/imgegl/imgegl/memory_diagnostics.c"
     "eurasiacon/imgegl/imgegl/srv_sgx.c"
     "eurasiacon/imgegl/imgegl/tls.c"
 )

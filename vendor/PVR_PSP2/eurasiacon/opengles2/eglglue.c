@@ -1558,8 +1558,26 @@ typedef IMG_VOID (IMG_CALLCONV *GetProcAddressReturnFunc)(IMG_VOID);
 	}
 
 
+typedef struct PvrTextureHeapUsage_TAG { IMG_UINT32 reserved, used, blocks; } PvrTextureHeapUsage;
+typedef struct PvrTextureMemorySnapshot_TAG { PvrTextureHeapUsage cdram, uncached; } PvrTextureMemorySnapshot;
+static IMG_INT32 IMG_CALLCONV glQueryTextureMemoryVITA(PvrTextureMemorySnapshot *out)
+{
+    SceHeapMallinfo info;
+    IMG_INT32 result;
+    __GLES2_GET_CONTEXT_RETURN(-1);
+    if(!out) return -1;
+    result = sceHeapGetMallinfo(gc->pvCDRAMHeap, &info);
+    if(result < 0) return result;
+    out->cdram.reserved = info.arena; out->cdram.used = info.uordblks; out->cdram.blocks = info.hblks;
+    result = sceHeapGetMallinfo(gc->pvUNCHeap, &info);
+    if(result < 0) return result;
+    out->uncached.reserved = info.arena; out->uncached.used = info.uordblks; out->uncached.blocks = info.hblks;
+    return 0;
+}
+
 static GetProcAddressReturnFunc GLES2GetProcAddress(const char *procname)
 {
+    COMPARE_AND_RETURN(glQueryTextureMemoryVITA)
 	/* Note that this is O(n) with a very small n */
 
 #if defined(EGL_CORE_PROC)

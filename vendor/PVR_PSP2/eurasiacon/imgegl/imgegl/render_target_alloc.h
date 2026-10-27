@@ -22,8 +22,7 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
         return IMG_FALSE;
     }
 
-    uid = sceKernelAllocMemBlock(name, SCE_KERNEL_MEMBLOCK_TYPE_USER_NC_RW,
-                                bytes, SCE_NULL);
+    uid = KrkrAllocRenderTargetBlock(context, name, bytes);
     if (uid < 0)
     {
         KrkrRenderFailure("rt-block", (unsigned)uid, bytes);
@@ -34,7 +33,7 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
     if (error != PVRSRV_OK)
     {
         KrkrRenderFailure("rt-register", (unsigned)error, bytes);
-        sceKernelFreeMemBlock(uid);
+        KrkrFreeRenderTargetBlock(context, uid);
         return IMG_FALSE;
     }
 
@@ -48,7 +47,7 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
             (unsigned)error, bytes, info->ui32NumPixelsX, info->ui32NumPixelsY,
             info->ui32NumRTData, info->ui32MaxQueuedRenders);
         PVRSRVUnregisterMemBlock(&context->s3D, uid);
-        sceKernelFreeMemBlock(uid);
+        KrkrFreeRenderTargetBlock(context, uid);
         info->i32DataMemblockUID = -1;
         info->hMemBlockProcRef = 0;
         return IMG_FALSE;

@@ -2493,6 +2493,13 @@ IMG_INTERNAL EGLBoolean IMGeglAwakenProcessIMG(void)
  *  RETURNS    : Extension function or IMG_NULL.
  *
  **********************************************************************/
+static IMG_INT32 IMG_CALLCONV IMGeglQueryDriverMemoryVITA(PvrDriverMemorySnapshot *out)
+{
+    TLS tls = TLS_Open(_TlsInit);
+    if(!tls) return -1;
+    return KrkrQueryDriverMemory(&tls->psGlobalData->sSysContext, out);
+}
+
 IMG_EXPORT void (IMG_CALLCONV * IMGeglGetProcAddress(const char *procname))(void)
 {
 	TLS			psTls;
@@ -2534,6 +2541,7 @@ IMG_EXPORT void (IMG_CALLCONV * IMGeglGetProcAddress(const char *procname))(void
 		  {"eglHibernateProcessIMG",        (EGL_PROC)IMGeglHibernateProcessIMG},
 		  {"eglAwakenProcessIMG",           (EGL_PROC)IMGeglAwakenProcessIMG},
 #endif
+		  {"eglQueryDriverMemoryVITA", (EGL_PROC)IMGeglQueryDriverMemoryVITA},
 		  {0,0}
 	  };
 

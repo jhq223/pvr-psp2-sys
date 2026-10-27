@@ -44,7 +44,7 @@ glow = { version = "=0.18.0", optional = true }
 khronos-egl = { version = "=6.0.0", features = ["dynamic"], optional = true }
 
 [target.'cfg(target_os = "vita")'.dependencies]
-vitasdk-sys = { version = "=0.3.3", optional = true, features = ["SceLibKernel_stub", "SceKernelThreadMgr_stub", "SceProcessmgr_stub", "SceRtc_stub", "SceCtrl_stub", "SceTouch_stub", "ScePower_stub", "SceAudio_stub", "SceIofilemgr_stub", "SceKernelModulemgr_stub", "SceSysmodule_stub", "SceSysmem_stub", "SceAvPlayer_stub", "SceDisplay_stub", "SceKernelDmacMgr_stub", "SceAppMgr_stub", "SceIme_stub"] }
+vitasdk-sys = { version = "=0.3.3", optional = true, features = ["SceLibKernel_stub", "SceKernelThreadMgr_stub", "SceProcessmgr_stub", "SceRtc_stub", "SceCtrl_stub", "SceTouch_stub", "ScePower_stub", "SceAudio_stub", "SceIofilemgr_stub", "SceKernelModulemgr_stub", "SceSysmodule_stub", "SceSysmem_stub", "SceGxm_stub", "SceAvPlayer_stub", "SceDisplay_stub", "SceKernelDmacMgr_stub", "SceAppMgr_stub", "SceIme_stub"] }
 
 [[test]]
 name = "video_contracts"
@@ -57,3 +57,7 @@ path = "native/tests/gamma_metadata.rs"
 [[test]]
 name = "sample_state"
 path = "native/tests/sample_state.rs"
+
+[[test]]
+name = "memory_diagnostics"
+path = "native/tests/memory_diagnostics.rs"

@@ -61,6 +61,9 @@ IMG_INTERNAL const SRVPixelFormat gasSRVPixelFormat[] =
 IMG_INTERNAL IMG_BOOL SRV_ServicesInit(SrvSysContext *psSysContext, IMGEGLAppHints *psAppHints, IMG_FLOAT fCPUSpeed)
 {
 	IMG_BOOL bRetVal = IMG_FALSE;
+    if(PVRSRVCreateMutex(&psSysContext->hMemoryStatsLock) != PVRSRV_OK) return IMG_FALSE;
+    PVRSRVMemSet(&psSysContext->memoryCounters, 0, sizeof(psSysContext->memoryCounters));
+    psSysContext->memoryCounters.valid = IMG_TRUE;
 #if defined(SUPPORT_SGX)
 	bRetVal = SRV_SGXServicesInit(psSysContext, psAppHints);
 #endif
@@ -79,6 +82,7 @@ IMG_INTERNAL IMG_BOOL SRV_ServicesInit(SrvSysContext *psSysContext, IMGEGLAppHin
 	psSysContext->psHeadSurface = IMG_NULL;
 	psSysContext->bHibernated = IMG_FALSE;
 #endif
+	if(!bRetVal && psSysContext->hMemoryStatsLock) { PVRSRVDestroyMutex(psSysContext->hMemoryStatsLock); psSysContext->hMemoryStatsLock = IMG_NULL; }
 	return bRetVal;
 }
 
@@ -104,6 +108,7 @@ IMG_INTERNAL IMG_BOOL SRV_ServicesDeInit(SrvSysContext *psSysContext)
 #if defined(EGL_EXTENSION_IMG_EGL_HIBERNATION)
 	psSysContext->psHeadSurface = IMG_NULL;
 #endif
+	if(bRetVal) { PVRSRVDestroyMutex(psSysContext->hMemoryStatsLock); psSysContext->hMemoryStatsLock = IMG_NULL; }
 	return bRetVal;
 }
 
@@ -505,6 +510,7 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemTrack(SrvSysContext *psSy
 	eError = PVRSRVAllocDeviceMem(psDevData, hDevMemHeap, ui32Attribs, ui32Size, ui32Alignment, psSysContext->hPerProcRef, ppsMemInfo);
 	if(eError == PVRSRV_OK)
 	{
+		KrkrDirectDeviceAllocated(psSysContext, (*ppsMemInfo)->uAllocSize);
 		psAllocation = &psSysContext->psDevMemAllocations[psSysContext->ui32CurrentAllocations];
 
 		psAllocation->psMemInfo = *ppsMemInfo;
@@ -530,7 +536,8 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemTrack(SrvSysContext *psSy
 		eError2 = PVRSRVAllocSyncInfo(psDevData, &psMemInfo->psClientSyncInfo);
 		if (eError2 != PVRSRV_OK)
 		{
-			PVRSRVFreeDeviceMem(psDevData, psMemInfo);
+			IMG_UINT32 bytes = psMemInfo->uAllocSize;
+            if(PVRSRVFreeDeviceMem(psDevData, psMemInfo) == PVRSRV_OK) KrkrDirectDeviceFreed(psSysContext, bytes);
 			ppsMemInfo = IMG_NULL;
 			eError = eError2;
 		}
@@ -606,9 +613,11 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLFreeDeviceMemTrack(SrvSysContext *psSys
 
 	if(bFound)
 	{
+		IMG_UINT32 bytes = psMemInfo->uAllocSize;
 		eError = KEGLFreeOwnedDeviceMem(psDevData, psMemInfo);
 		if(eError == PVRSRV_OK)
 		{
+			KrkrDirectDeviceFreed(psSysContext, bytes);
 			/* Remove tracking only after both release phases succeeded. */
 			psSysContext->psDevMemAllocations[ui32PointerPosition] = psSysContext->psDevMemAllocations[--psSysContext->ui32CurrentAllocations];
 		}
@@ -688,6 +697,7 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemPsp2(SrvSysContext *psSys
 	if (eError == PVRSRV_OK)
 	{
 		psMemInfo = *ppsMemInfo;
+        KrkrDirectDeviceAllocated(psSysContext, psMemInfo->uAllocSize);
 
 		psMemInfo->psClientSyncInfo = IMG_NULL;
 
@@ -696,7 +706,8 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemPsp2(SrvSysContext *psSys
 			eError = PVRSRVAllocSyncInfo(psDevData, &psMemInfo->psClientSyncInfo);
 			if (eError != PVRSRV_OK)
 			{
-				PVRSRVFreeDeviceMem(psDevData, psMemInfo);
+				IMG_UINT32 bytes = psMemInfo->uAllocSize;
+                if(PVRSRVFreeDeviceMem(psDevData, psMemInfo) == PVRSRV_OK) KrkrDirectDeviceFreed(psSysContext, bytes);
 				*ppsMemInfo = IMG_NULL;
 				return eError;
 			}
@@ -716,8 +727,10 @@ IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLAllocDeviceMemPsp2(SrvSysContext *psSys
 IMG_EXPORT PVRSRV_ERROR IMG_CALLCONV KEGLFreeDeviceMemPsp2(SrvSysContext *psSysContext,
 	PVRSRV_DEV_DATA	*psDevData, PVRSRV_CLIENT_MEM_INFO *psMemInfo)
 {
-	PVR_UNREFERENCED_PARAMETER(psSysContext);
-	return KEGLFreeOwnedDeviceMem(psDevData, psMemInfo);
+	IMG_UINT32 bytes = psMemInfo->uAllocSize;
+    PVRSRV_ERROR result = KEGLFreeOwnedDeviceMem(psDevData, psMemInfo);
+    if(result == PVRSRV_OK) KrkrDirectDeviceFreed(psSysContext, bytes);
+    return result;
 }
 #endif /* defined(DEBUG) */
 

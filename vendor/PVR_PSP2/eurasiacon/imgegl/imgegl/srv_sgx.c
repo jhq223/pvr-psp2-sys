@@ -811,6 +811,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	/* Set up ZLS registers */
 	SetupZLSRegs(psSurface, psParams->ui32Width, psParams->ui32Height, bMultiSample);
 
+	KrkrSurfaceCreated(psSysContext);
 	return IMG_TRUE;
 
 
@@ -844,14 +845,14 @@ fail_syncinfo_alloc:
 		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX], &hDrvMemBlockForFree, &bUnused);
 		SGXRemoveRenderTarget(&psSysContext->s3D, psSysContext->hRenderContext, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]);
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 	}
 
 fail_add_rendertarget1:
 	SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[ui32RTIndex], &hDrvMemBlockForFree, &bUnused);
 	SGXRemoveRenderTarget(&psSysContext->s3D, psSysContext->hRenderContext, psSurface->ahRenderTarget[ui32RTIndex]);
 	PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-	sceKernelFreeMemBlock(hDrvMemBlockForFree);
+	KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 
 fail_add_rendertarget:
 	PVRSRVDestroyMutex(psSurface->hMutex);
@@ -975,7 +976,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXDestroyRenderSurface(SrvSysContext *psSysContext, 
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		if(KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree) < 0) bSuccess = IMG_FALSE;
 	}
 
 	psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
@@ -994,7 +995,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXDestroyRenderSurface(SrvSysContext *psSysContext, 
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		if(KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree) < 0) bSuccess = IMG_FALSE;
 	}
 
 	psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
@@ -1018,6 +1019,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXDestroyRenderSurface(SrvSysContext *psSysContext, 
 	
 	PVRSRVDestroyMutex(psSurface->hMutex);
 
+	if(bSuccess) KrkrSurfaceRetired(psSysContext);
 	return bSuccess;
 }
 
@@ -1092,7 +1094,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXResizeRenderSurface(SrvSysContext		*psSysContext,
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 
 		psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
 	}
@@ -1111,7 +1113,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXResizeRenderSurface(SrvSysContext		*psSysContext,
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 
 		psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
 	}
@@ -1313,7 +1315,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXHibernateRenderSurface(SrvSysContext		*psSysContex
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 
 		psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
 	}
@@ -1332,7 +1334,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXHibernateRenderSurface(SrvSysContext		*psSysContex
 		}
 
 		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
+		KrkrFreeRenderTargetBlock(psSysContext, hDrvMemBlockForFree);
 
 		psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
 	}
