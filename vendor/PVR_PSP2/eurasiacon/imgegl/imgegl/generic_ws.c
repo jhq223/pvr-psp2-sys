@@ -883,6 +883,7 @@ static IMG_BOOL KEGLRecreateDrawable(KEGL_SURFACE *psSurface,
 		}
 	}
 
+    if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
 	switch (psSurface->type)
 	{
 		case EGL_SURFACE_WINDOW:
@@ -914,8 +915,9 @@ static IMG_BOOL KEGLRecreateDrawable(KEGL_SURFACE *psSurface,
 				eError = psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.window.hDrawable);
 				if (eError!=WSEGL_SUCCESS)
 				{
-					/* Ignore the error, there is nothing we can do */
-					PVR_DPF((PVR_DBG_ERROR,"KEGLRecreateDrawable: Couldn't delete a drawable"));
+                    KrkrDeviceFault(psSysContext, "drawable-recreate", eError);
+                    EGLThreadUnlockWSEGL(psDpy, psTls);
+                    return IMG_FALSE;
 				}
 
 			}
@@ -959,8 +961,9 @@ static IMG_BOOL KEGLRecreateDrawable(KEGL_SURFACE *psSurface,
 				eError = psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.pixmap.hDrawable);
 				if (eError!=WSEGL_SUCCESS)
 				{
-					/* Ignore the error, there is nothing we can do */
-					PVR_DPF((PVR_DBG_ERROR,"KEGLRecreateDrawable: Couldn't delete a drawable"));
+                    KrkrDeviceFault(psSysContext, "drawable-recreate", eError);
+                    EGLThreadUnlockWSEGL(psDpy, psTls);
+                    return IMG_FALSE;
 				}
 			}
 
@@ -1457,6 +1460,7 @@ IMG_INTERNAL IMG_VOID GWS_DeletePBufferDrawable(KEGL_SURFACE* psSurface, SrvSysC
 {
 	TLS pTls;
 
+    if(KrkrDeviceFaulted(psSysContext)) return;
 	pTls = IMGEGLGetTLSValue();
 
 	if (pTls==IMG_NULL)
@@ -1469,6 +1473,7 @@ IMG_INTERNAL IMG_VOID GWS_DeletePBufferDrawable(KEGL_SURFACE* psSurface, SrvSysC
 	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->u.pbuffer.psMemInfo) != PVRSRV_OK)
 	{
 		PVR_DPF((PVR_DBG_ERROR,"GWS_DestroyPBufferDrawable: Couldn't free device memory"));
+        KrkrDeviceFault(psSysContext, "pbuffer-memory", 0); return;
 	}
 }
 

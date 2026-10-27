@@ -299,12 +299,14 @@ static IMG_VOID FreeFrameBuffer(GLES2Context *gc, GLES2FrameBuffer *psFrameBuffe
 			/* Detach currently attached renderbuffer */
 			NamedItemDelRef(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_RENDERBUFFER],
 				(GLES2NamedItem*)psAttachment);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 		else if (psAttachment && psAttachment->eAttachmentType == GL_TEXTURE) 
 		{
 			/* Detach currently attached texture */
 			NamedItemDelRef(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_TEXOBJ],
 				(GLES2NamedItem*)(((GLES2MipMapLevel*)psAttachment)->psTex));
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 	}
 
@@ -336,50 +338,41 @@ static IMG_VOID FrameBufferHasBeenModified(GLES2FrameBuffer *psFrameBuffer)
  Description        : If the attachment had a render surface associated, it is destroyed,
                       the memory is freed and the pointer to the surface is reset to null.
 ************************************************************************************/
-IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface(GLES2Context *gc, GLES2FrameBufferAttachable *psAttachment)
+IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface(GLES2Context *gc, GLES2FrameBufferAttachable *attachment)
 {
-    ForgetFBOSurface(gc, psAttachment);
-	if(psAttachment->psRenderSurface)
-	{
-		FlushAttachableIfNeeded(gc, psAttachment, GLES2_SCHEDULE_HW_LAST_IN_SCENE|GLES2_SCHEDULE_HW_WAIT_FOR_3D);
-
-		psAttachment->psRenderSurface->ui32FBOAttachmentCount--;
-
-		/* Only destroy render surface if this is the last reference */
-		if(psAttachment->psRenderSurface->ui32FBOAttachmentCount)
-		{
-			/* Restore the sync info */
-			if(psAttachment->psRenderSurface->psRenderSurfaceSyncInfo!=psAttachment->psRenderSurface->psSyncInfo)
-			{
-				psAttachment->psRenderSurface->psSyncInfo = psAttachment->psRenderSurface->psRenderSurfaceSyncInfo;
-			}
-		}
-		else
-		{
-			if(!KEGLDestroyRenderSurface(gc->psSysContext, psAttachment->psRenderSurface))
-			{
-				PVR_DPF((PVR_DBG_ERROR,"FBOAttachableHasBeenModified: Couldn't destroy render surface"));
-			}
-
-			/* Remove references to this surface in all resource managers */
-			KRM_RemoveAttachmentPointReferences(&gc->psSharedState->psTextureManager->sKRM, psAttachment->psRenderSurface);
-			KRM_RemoveAttachmentPointReferences(&gc->psSharedState->sUSEShaderVariantKRM, psAttachment->psRenderSurface);
-
-			if(gc->psRenderSurface==psAttachment->psRenderSurface)
-			{
-				gc->psRenderSurface = IMG_NULL;
-			}
-
-			GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
-		}
-
-		psAttachment->psRenderSurface = IMG_NULL;
-
-		if(GL_TEXTURE == psAttachment->eAttachmentType)
-		{
-			((GLES2MipMapLevel*)psAttachment)->psTex->ui32NumRenderTargets--;
-		}
-	}
+    EGLRenderSurface *surface;
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+    surface = attachment->psRenderSurface;
+    if(!surface) return;
+    if(!FlushAttachableIfNeeded(gc, attachment,
+        GLES2_SCHEDULE_HW_LAST_IN_SCENE | GLES2_SCHEDULE_HW_WAIT_FOR_3D))
+    {
+        KrkrDeviceFault(gc->psSysContext, "fbo-flush", 0);
+        return;
+    }
+    if(surface->ui32FBOAttachmentCount == 1)
+    {
+        if(!KEGLDestroyRenderSurface(gc->psSysContext, surface))
+        {
+            KrkrDeviceFault(gc->psSysContext, "fbo-retire", 0);
+            return;
+        }
+        ForgetFBOSurface(gc, attachment);
+        KRM_RemoveAttachmentPointReferences(&gc->psSharedState->psTextureManager->sKRM, surface);
+        KRM_RemoveAttachmentPointReferences(&gc->psSharedState->sUSEShaderVariantKRM, surface);
+        if(gc->psRenderSurface == surface) gc->psRenderSurface = IMG_NULL;
+        GLES2Free(IMG_NULL, surface);
+    }
+    else
+    {
+        --surface->ui32FBOAttachmentCount;
+        if(surface->psRenderSurfaceSyncInfo != surface->psSyncInfo)
+            surface->psSyncInfo = surface->psRenderSurfaceSyncInfo;
+        ForgetFBOSurface(gc, attachment);
+    }
+    attachment->psRenderSurface = IMG_NULL;
+    if(attachment->eAttachmentType == GL_TEXTURE)
+        --((GLES2MipMapLevel *)attachment)->psTex->ui32NumRenderTargets;
 }
 
 
@@ -393,6 +386,7 @@ IMG_INTERNAL IMG_VOID DestroyFBOAttachableRenderSurface(GLES2Context *gc, GLES2F
 static IMG_VOID FreeRenderBuffer(GLES2Context *gc, GLES2RenderBuffer *psRenderBuffer)
 {
 	DestroyFBOAttachableRenderSurface(gc, &psRenderBuffer->sFBAttachable);
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
 	if(psRenderBuffer->psEGLImageSource)
@@ -412,6 +406,7 @@ static IMG_VOID FreeRenderBuffer(GLES2Context *gc, GLES2RenderBuffer *psRenderBu
 	if(psRenderBuffer->psMemInfo)
 	{
 		GLES2FREEDEVICEMEM_HEAP(gc, psRenderBuffer->psMemInfo);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	}
 
 	GLES2Free(IMG_NULL, psRenderBuffer);
@@ -586,6 +581,7 @@ IMG_INTERNAL IMG_VOID FreeFrameBufferState(GLES2Context *gc)
 	{
 		NamedItemDelRef(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_RENDERBUFFER],
 			(GLES2NamedItem*)gc->sFrameBuffer.psActiveRenderBuffer);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		gc->sFrameBuffer.psActiveRenderBuffer = IMG_NULL;
 	}
 
@@ -596,6 +592,7 @@ IMG_INTERNAL IMG_VOID FreeFrameBufferState(GLES2Context *gc)
 
 		NamedItemDelRef(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_FRAMEBUFFER],
 						(GLES2NamedItem*)gc->sFrameBuffer.psActiveFrameBuffer);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		
 		gc->sFrameBuffer.psActiveFrameBuffer = psFrameBuffer;
 	}
@@ -916,7 +913,8 @@ static IMG_BOOL SetupFrameBufferColorAttachment(GLES2Context *gc, GLES2FrameBuff
 										IMG_FALSE,
 										psFrameBuffer->sDrawParams.psRenderSurface))
 			{
-				GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
+				if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+                GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
 				psAttachment->psRenderSurface = 0;
 				return IMG_FALSE;
 			}
@@ -1794,6 +1792,7 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
             if(target && !target->psRenderSurface)
             {
                 TrimIdleFBOSurfaces(gc);
+                if(KrkrDeviceFaulted(gc->psSysContext)) return;
                 ReclaimIdleTextureSyncs(gc);
                 break;
             }
@@ -1925,7 +1924,8 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 										IMG_FALSE,
 										psFrameBuffer->sDrawParams.psRenderSurface))
 			{
-				GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
+				if(KrkrDeviceFaulted(gc->psSysContext)) return;
+                GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
 				psAttachment->psRenderSurface = 0;
 				goto CouldNotCreateRenderSurface;
 			}
@@ -1971,6 +1971,7 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 		{
 			/* Destroy the attachment RS if we've got an FBO RS and a different attachment RS */
 			DestroyFBOAttachableRenderSurface(gc, psAttachment);
+			if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 
 		if(psFBORenderSurface)
@@ -2035,7 +2036,8 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 									IMG_FALSE,
 									psFrameBuffer->sDrawParams.psRenderSurface))
 			{
-				GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
+				if(KrkrDeviceFaulted(gc->psSysContext)) return;
+                GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
 
 				psAttachment->psRenderSurface = 0;
 
@@ -2074,6 +2076,7 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 		{
 			/* Destroy the attachment RS if we've got an FBO RS and a different attachment RS */
 			DestroyFBOAttachableRenderSurface(gc, psAttachment);
+			if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 
 		if(psFBORenderSurface)
@@ -2135,7 +2138,8 @@ static IMG_VOID ComputeFrameBufferCompleteness(GLES2Context *gc)
 									IMG_FALSE,
 									psFrameBuffer->sDrawParams.psRenderSurface))
 			{
-				GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
+				if(KrkrDeviceFaulted(gc->psSysContext)) return;
+                GLES2Free(IMG_NULL, psAttachment->psRenderSurface);
 
 				psAttachment->psRenderSurface = 0;
 
@@ -2404,6 +2408,7 @@ IMG_INTERNAL IMG_VOID FBOAttachableHasBeenModified(GLES2Context *gc, GLES2FrameB
 
 	/* 1- Delete the render surface */
 	DestroyFBOAttachableRenderSurface(gc, psAttachment);
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	/* 2- Notify all attached framebuffers about the change */
 	NamesArrayMapFunction(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_FRAMEBUFFER], NotifyFrameBuffer, (IMG_VOID*)psAttachment);
@@ -2887,6 +2892,7 @@ static IMG_VOID RenderbufferStorage(GLenum target, GLsizei samples, GLenum inter
     }
 
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psRenderBuffer);
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	ui32BufferSize *= ((IMG_UINT32)width  + EURASIA_TAG_TILE_SIZEX-1) & ~(EURASIA_TAG_TILE_SIZEX-1);
 	ui32BufferSize *= ((IMG_UINT32)height + EURASIA_TAG_TILE_SIZEY-1) & ~(EURASIA_TAG_TILE_SIZEY-1);
@@ -3090,6 +3096,7 @@ IMG_INTERNAL IMG_BOOL SetupRenderbufferFromEGLImage(GLES2Context *gc, GLES2Rende
 
 	/* Notify all the framebuffers attached to this renderbuffers about the change */
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psRenderBuffer);
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	/* Free any memory that we had allocated earlier for this renderbuffer */
 	if(psRenderBuffer->psMemInfo)

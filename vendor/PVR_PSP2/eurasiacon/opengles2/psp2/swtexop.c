@@ -142,6 +142,7 @@ static IMG_BOOL CanRetire(SWTextureState *state, const SWRetired *entry)
 
 static IMG_VOID ReleaseRetired(SWTextureState *state, SWRetired *entry)
 {
+    if(KrkrDeviceFaulted(state->gc->psSysContext)) return;
     IMG_UINT32 i;
     if(entry->stagingSize && entry->stagingSize <= 1024U * 1024U)
     {
@@ -169,6 +170,7 @@ static IMG_INT32 Cleanup(SceSize size, IMG_VOID *argument)
     PVR_UNREFERENCED_PARAMETER(size);
     for(;;)
     {
+        if(KrkrDeviceFaulted(state->gc->psSysContext)) return 0;
         IMG_UINT32 examined, count = 0, i;
         IMG_UINT64 transfer = 0;
         IMG_BOOL again, closing;
@@ -205,7 +207,8 @@ static IMG_INT32 Cleanup(SceSize size, IMG_VOID *argument)
                     sceKernelDelayThread(1000);
                 state->completedTransfer = transfer;
             }
-            for(i = 0; i < count; ++i) ReleaseRetired(state, &batch[i]);
+            for(i = 0; i < count; ++i)
+            { if(KrkrDeviceFaulted(state->gc->psSysContext)) return 0; ReleaseRetired(state, &batch[i]); }
         }
         if(closing) break;
         if(!again)
@@ -309,6 +312,7 @@ static IMG_INT32 Worker(SceSize size, IMG_VOID *argument)
         SWJob *job;
         IMG_UINT32 index;
         sceKernelWaitSema(state->work, 1, SCE_NULL);
+        if(KrkrDeviceFaulted(state->gc->psSysContext)) return 0;
         Lock(state);
         if(state->firstJob == SW_NONE)
         { IMG_BOOL stop = state->stopping; Unlock(state); if(stop) break; else continue; }
@@ -319,6 +323,7 @@ static IMG_INT32 Worker(SceSize size, IMG_VOID *argument)
         job->thread = sceKernelGetThreadId();
         Unlock(state);
         Execute(job);
+        if(KrkrDeviceFaulted(state->gc->psSysContext)) return 0;
         if(job->modification)
         {
             PVRSRVModifyCompleteSyncOps(state->gc->psSysContext->psConnection, job->modification);
@@ -456,7 +461,7 @@ IMG_VOID SWTextureDestroy(GLES2Context *gc)
 {
     SWTextureState *state = gc->psSWTexture;
     IMG_UINT32 i;
-    if(!state) return;
+    if(!state || KrkrDeviceFaulted(gc->psSysContext)) return;
     SWTextureStopWorkers(gc);
     Lock(state); state->closing = IMG_TRUE; sceKernelSetEventFlag(state->wake, 1); Unlock(state);
     sceKernelWaitThreadEnd(state->cleanup, SCE_NULL, SCE_NULL);
@@ -464,7 +469,11 @@ IMG_VOID SWTextureDestroy(GLES2Context *gc)
     for(i = 0; i < SW_POOL_COUNT; ++i)
         if(state->pool[i]) sceHeapFreeHeapMemory(gc->pvUNCHeap, state->pool[i]);
     for(i = 0; i < state->syncCount; ++i)
-        PVRSRVFreeSyncInfo(gc->ps3DDevData, state->syncPool[i]);
+    {
+        PVRSRV_ERROR error = PVRSRVFreeSyncInfo(gc->ps3DDevData, state->syncPool[i]);
+        if(error != PVRSRV_OK) { KrkrDeviceFault(gc->psSysContext, "texture-sync-pool", error); return; }
+        state->syncPool[i] = IMG_NULL;
+    }
     sceKernelDeleteSema(state->work);
     sceKernelDeleteEventFlag(state->space); sceKernelDeleteEventFlag(state->done); sceKernelDeleteEventFlag(state->wake);
     sceKernelDeleteLwMutex(&state->lock);
@@ -585,7 +594,8 @@ PVRSRV_CLIENT_SYNC_INFO *SWTextureAcquireSync(GLES2Context *gc)
 IMG_VOID SWTextureReleaseSync(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *sync)
 {
     SWTextureState *state = gc->psSWTexture;
-    if(!sync) return;
+    PVRSRV_ERROR error;
+    if(!sync || KrkrDeviceFaulted(gc->psSysContext)) return;
     if(state && SGX2DQueryBlitsComplete(gc->ps3DDevData, sync, IMG_FALSE) == PVRSRV_OK)
     {
         Lock(state);
@@ -593,5 +603,6 @@ IMG_VOID SWTextureReleaseSync(GLES2Context *gc, PVRSRV_CLIENT_SYNC_INFO *sync)
         { state->syncPool[state->syncCount++] = sync; Unlock(state); return; }
         Unlock(state);
     }
-    PVRSRVFreeSyncInfo(gc->ps3DDevData, sync);
+    error = PVRSRVFreeSyncInfo(gc->ps3DDevData, sync);
+    if(error != PVRSRV_OK) KrkrDeviceFault(gc->psSysContext, "texture-sync", error);
 }

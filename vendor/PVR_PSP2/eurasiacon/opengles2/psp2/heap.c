@@ -35,6 +35,10 @@
 #include "services.h"
 #include "img_types.h"
 #include "psp2_pvr_defs.h"
+#include "heap_retirement.h"
+
+void sceHeapBindDeviceFault(void (*fault)(void *,const char *,int), void *owner,const unsigned int *word) { PvrHeapBindFault(fault, owner, word); }
+void sceHeapReleaseDeviceFault(void) { PvrHeapReleaseFault(); }
 
 #define ALIGN(x, a)	(((x) + ((a) - 1)) & ~((a) - 1))
 
@@ -51,6 +55,19 @@ int _sceHeapQueryAllocatedSize(void *heap, void *ptr);
 
 //J ヒープメモリの作成
 //E Create heap memory
+static int RetireHeapBlock(PVRSRV_DEV_DATA *device, SceUID uid, void *base, int mapped)
+{
+    int result;
+    if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
+    if(mapped) {
+        result = PVRSRVUnmapMemoryFromGpu(device, base, 0, IMG_FALSE);
+        if(result != PVRSRV_OK) { PvrHeapFault("heap-unmap", result); return SCE_HEAP_ERROR_INVALID_ID; }
+    }
+    result = sceKernelFreeMemBlock(uid);
+    if(result < 0) return PvrHeapFault("heap-block-free", result);
+    return 0;
+}
+
 void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, const char *name, unsigned int heapblocksize, int flags, const SceHeapOptParam *optParam)
 {
 	SceHeapWorkInternal	*head;
@@ -61,6 +78,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	int res;
 	int i;
 
+    if(PvrHeapFaulted()) return SCE_NULL;
 	if (optParam) {
 		memblockType = optParam->memblockType;
 	}
@@ -98,7 +116,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	}
 	res = sceKernelGetMemBlockBase(uid, &p);
 	if (res < 0) {
-		sceKernelFreeMemBlock(uid);
+		RetireHeapBlock(psDevData, uid, SCE_NULL, 0);
 		return (SCE_NULL);
 	}
 
@@ -112,7 +130,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 		PVRSRV_MEM_READ | PVRSRV_MEM_WRITE | PVRSRV_MEM_USER_SUPPLIED_DEVVADDR,
 		IMG_NULL);
 	if (res != PVRSRV_OK) {
-		sceKernelFreeMemBlock(uid);
+		RetireHeapBlock(psDevData, uid, SCE_NULL, 0);
 		return (SCE_NULL);
 	}
 
@@ -131,8 +149,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	//J 排他制御用の軽量ミューテックスを生成
 	res = sceKernelCreateLwMutex(&head->lwmtx, name, SCE_KERNEL_LW_MUTEX_ATTR_RECURSIVE | SCE_KERNEL_LW_MUTEX_ATTR_TH_FIFO, 0, SCE_NULL);
 	if (res < 0) {
-		PVRSRVUnmapMemoryFromGpu(psDevData, p, 0, IMG_FALSE);
-		sceKernelFreeMemBlock(uid);
+		RetireHeapBlock(psDevData, uid, p, 1);
 		return (SCE_NULL);
 	}
 
@@ -143,9 +160,9 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	hp->size = heapblocksize - (unsigned int)((char *)(hp + 1) - (char *)head);
 	hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
 	if(!hp->msp) {
-		sceKernelDeleteLwMutex(&head->lwmtx);
-		PVRSRVUnmapMemoryFromGpu(psDevData, p, 0, IMG_FALSE);
-		sceKernelFreeMemBlock(uid);
+		res = sceKernelDeleteLwMutex(&head->lwmtx);
+        if(res < 0) { PvrHeapFault("heap-mutex-delete", res); return SCE_NULL; }
+		RetireHeapBlock(psDevData, uid, p, 1);
 		return SCE_NULL;
 	}
 
@@ -156,6 +173,7 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 	head->memblockType = memblockType;
     head->spare = SCE_NULL;
 
+    ++st_liveHeaps;
 	return (head);
 }
 
@@ -164,74 +182,71 @@ void	*sceHeapCreateHeap(PVRSRV_DEV_DATA *psDevData, IMG_SID hDevMemContext, cons
 //E Delete heap memory
 int sceHeapDeleteHeap(void *heap)
 {
-	SceHeapWorkInternal	*head;
-	SceHeapMspaceLink	*hp, *next;
-	void *tmpBase;
-	int res;
-
-	head = (SceHeapWorkInternal *)heap;
-
-	if (head == SCE_NULL) {
-		return (SCE_HEAP_ERROR_INVALID_ID);
-	}
-	if (head->magic != (SceUIntPtr)(head + 1)) {
-		return (SCE_HEAP_ERROR_INVALID_ID);
-	}
-
-	//J 排他制御用の軽量ミューテックスをロック
-	res = sceKernelLockLwMutex(&head->lwmtx, 1, SCE_NULL);
-	if (res < 0) {
-		return (res);
-	}
-
-	head->magic = 0;
-	sceKernelUnlockLwMutex(&head->lwmtx, 1);
-
-	sceKernelDeleteLwMutex(&head->lwmtx);
-
-	for (hp = head->prim.next; ; hp = next) {
-		next = hp->next;
-		sceClibMspaceDestroy(hp->msp);
-		sceKernelGetMemBlockBase(hp->uid, &tmpBase);
-		PVRSRVUnmapMemoryFromGpu(st_psDevData, tmpBase, 0, IMG_FALSE);
-		sceKernelFreeMemBlock(hp->uid);
-		if (hp == &(head->prim)) {
-			break;
-		}
-	}
-
-	return (SCE_OK);
+    SceHeapWorkInternal *head = (SceHeapWorkInternal *)heap;
+    SceHeapMspaceLink *hp, *next;
+    void *base;
+    int result;
+    if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
+    if(!head || head->magic != (SceUIntPtr)(head + 1)) return SCE_HEAP_ERROR_INVALID_ID;
+    result = sceKernelLockLwMutex(&head->lwmtx, 1, SCE_NULL);
+    if(result < 0) return PvrHeapFault("heap-delete-lock", result);
+    for(hp = head->prim.next; ; hp = next) {
+        SceUID uid = hp->uid;
+        int primary = hp == &head->prim;
+        next = hp->next;
+        result = sceKernelGetMemBlockBase(uid, &base);
+        if(result < 0) break;
+        sceClibMspaceDestroy(hp->msp);
+        if(primary) {
+            result = sceKernelUnlockLwMutex(&head->lwmtx, 1);
+            if(result < 0) return PvrHeapFault("heap-delete-unlock", result);
+            result = sceKernelDeleteLwMutex(&head->lwmtx);
+            if(result < 0) return PvrHeapFault("heap-delete-mutex", result);
+        }
+        result = RetireHeapBlock(st_psDevData, uid, base, 1);
+        if(result < 0) {
+            if(!primary) sceKernelUnlockLwMutex(&head->lwmtx, 1);
+            return result;
+        }
+        if(primary) { --st_liveHeaps; return 0; }
+        head->prim.next = next;
+        next->prev = &head->prim;
+    }
+    sceKernelUnlockLwMutex(&head->lwmtx, 1);
+    return PvrHeapFault("heap-delete-base", result);
 }
+
 
 
 /* Drop only an empty mapped block. Caller holds the heap lock. */
 static unsigned int TrimSpare(SceHeapWorkInternal *head)
 {
-    SceHeapMspaceLink *hp = head->spare;
+    SceHeapMspaceLink *hp = head->spare, *previous, *next;
     void *base;
     SceUID uid;
     unsigned int bytes;
-    if(!hp) return 0;
-    uid = hp->uid;
+    int result;
+    if(PvrHeapFaulted() || !hp) return 0;
+    uid = hp->uid; previous = hp->prev; next = hp->next;
     bytes = ALIGN(hp->size + sizeof(*hp), head->memblockType == SCE_HEAP_OPT_MEMBLOCK_TYPE_CDRAM ? 256 * 1024 : 4096);
-    if(sceKernelGetMemBlockBase(uid, &base) < 0) return 0;
-    head->spare = SCE_NULL;
-    hp->next->prev = hp->prev;
-    hp->prev->next = hp->next;
-#if USE_HEAPINFO
-    --head->info.hblks;
-    head->info.arena -= bytes;
-#endif
+    result = sceKernelGetMemBlockBase(uid, &base);
+    if(result < 0) { PvrHeapFault("heap-trim-base", result); return 0; }
     sceClibMspaceDestroy(hp->msp);
-    PVRSRVUnmapMemoryFromGpu(st_psDevData, base, 0, IMG_FALSE);
-    sceKernelFreeMemBlock(uid);
+    if(RetireHeapBlock(st_psDevData, uid, base, 1) < 0) return 0;
+    head->spare = SCE_NULL;
+    previous->next = next; next->prev = previous;
+#if USE_HEAPINFO
+    --head->info.hblks; head->info.arena -= bytes;
+#endif
     return bytes;
 }
+
 
 unsigned int sceHeapTrimEmpty(void *heap)
 {
     SceHeapWorkInternal *head = (SceHeapWorkInternal *)heap;
     unsigned int bytes;
+    if(PvrHeapFaulted()) return 0;
     if(!head || head->magic != (SceUIntPtr)(head + 1)) return 0;
     if(sceKernelLockLwMutex(&head->lwmtx, 1, SCE_NULL) < 0) return 0;
     bytes = TrimSpare(head);
@@ -254,6 +269,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 	failure->error = 0;
 	failure->blockSize = 0;
 
+    if(PvrHeapFaulted()) return SCE_NULL;
 	head = (SceHeapWorkInternal *)heap;
 	/* Leave room for alignment, allocator metadata and kernel block rounding. */
 	if(!head || nbytes > 0x7FFFFFFFU - 4096U - SCE_HEAP_MSPACE_LINK_OVERHEAD - 256U * 1024U)
@@ -317,6 +333,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 	}
 	/* An incompatible spare must not obstruct a larger kernel allocation. */
 	TrimSpare(head);
+    if(PvrHeapFaulted()) { failure->stage = "heap-retirement"; sceKernelUnlockLwMutex(&head->lwmtx, 1); return SCE_NULL; }
 	failure->stage = "fixed-heap";
 	if (head->bsize > 3) {
 		//J SCE_HEAP_AUTO_EXTENDを意味している
@@ -376,7 +393,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 		if (res < 0) {
 			failure->stage = "kernel-base";
 			failure->error = res;
-			sceKernelFreeMemBlock(uid);
+			RetireHeapBlock(st_psDevData, uid, SCE_NULL, 0);
 			sceKernelUnlockLwMutex(&head->lwmtx, 1);
 			return (SCE_NULL);
 		}
@@ -394,7 +411,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 		if (res != PVRSRV_OK) {
 			failure->stage = "gpu-map";
 			failure->error = res;
-			sceKernelFreeMemBlock(uid);
+			RetireHeapBlock(st_psDevData, uid, SCE_NULL, 0);
 			sceKernelUnlockLwMutex(&head->lwmtx, 1);
 			return (SCE_NULL);
 		}
@@ -407,8 +424,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 			hp->msp  = sceClibMspaceCreate((hp + 1), hp->size);
 			if(!hp->msp) {
 				failure->stage = "mspace-create";
-				PVRSRVUnmapMemoryFromGpu(st_psDevData, p, 0, IMG_FALSE);
-				sceKernelFreeMemBlock(uid);
+				RetireHeapBlock(st_psDevData, uid, p, 1);
 				sceKernelUnlockLwMutex(&head->lwmtx, 1);
 				return SCE_NULL;
 			}
@@ -424,8 +440,7 @@ void *sceHeapAllocHeapMemoryWithReport(void *heap, unsigned int nbytes, const Sc
 			if(!result) {
 				failure->stage = "mspace-alloc";
 				sceClibMspaceDestroy(hp->msp);
-				PVRSRVUnmapMemoryFromGpu(st_psDevData, p, 0, IMG_FALSE);
-				sceKernelFreeMemBlock(uid);
+				RetireHeapBlock(st_psDevData, uid, p, 1);
 				sceKernelUnlockLwMutex(&head->lwmtx, 1);
 				return SCE_NULL;
 			}
@@ -487,6 +502,7 @@ int	sceHeapFreeHeapMemory(void *heap, void *ptr)
 	int res;
 	void *tmpBase;
 
+    if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {
@@ -514,28 +530,18 @@ int	sceHeapFreeHeapMemory(void *heap, void *ptr)
                 !head->spare && head->bsize && hp->size + sizeof(*hp) <= (8U * 1024U * 1024U))
                 head->spare = hp;
             if (hp != &head->prim && hp != head->spare && sceClibMspaceIsHeapEmpty(hp->msp)) {
-				//J 双方向リンクリストから抜きます
-				//E unlink from double-liked list
-				hp->next->prev = hp->prev;
-				hp->prev->next = hp->next;
-
+                SceHeapMspaceLink *previous = hp->prev, *next = hp->next;
+                unsigned int bytes = ALIGN(hp->size + sizeof(*hp), head->memblockType == SCE_HEAP_OPT_MEMBLOCK_TYPE_CDRAM ? 256 * 1024 : 4096);
+                SceUID uid = hp->uid;
+                res = sceKernelGetMemBlockBase(uid, &tmpBase);
+                if(res < 0) { PvrHeapFault("heap-empty-base", res); sceKernelUnlockLwMutex(&head->lwmtx, 1); return res; }
+                sceClibMspaceDestroy(hp->msp);
+                res = RetireHeapBlock(st_psDevData, uid, tmpBase, 1);
+                if(res < 0) { sceKernelUnlockLwMutex(&head->lwmtx, 1); return res; }
+                previous->next = next; next->prev = previous;
 #if USE_HEAPINFO
-				//J 保持ブロック数とサイズを減らす
-				head->info.hblks--;
-				switch (head->memblockType) {
-				case SCE_HEAP_OPT_MEMBLOCK_TYPE_USER:
-				case SCE_HEAP_OPT_MEMBLOCK_TYPE_USER_NC:
-					head->info.arena -= ALIGN(hp->size, 4096);
-					break;
-				case SCE_HEAP_OPT_MEMBLOCK_TYPE_CDRAM:
-					head->info.arena -= ALIGN(hp->size, 256 * 1024);
-					break;
-				}
-#endif	/* USE_HEAPINFO */
-				sceClibMspaceDestroy(hp->msp);
-				sceKernelGetMemBlockBase(hp->uid, &tmpBase);
-				PVRSRVUnmapMemoryFromGpu(st_psDevData, tmpBase, 0, IMG_FALSE);
-				sceKernelFreeMemBlock(hp->uid);
+                --head->info.hblks; head->info.arena -= bytes;
+#endif
 			}
 #if USE_HEAPINFO
 			//J 割り当て済み標準ブロックの数をデクリメント
@@ -565,6 +571,7 @@ void *sceHeapReallocHeapMemoryWithOption(void *heap, void *ptr, unsigned int nby
 	int res;
 	unsigned int uiSize;
 
+	if(PvrHeapFaulted()) return SCE_NULL;
 	if (ptr == SCE_NULL) {
 		return (sceHeapAllocHeapMemoryWithOption(heap, nbytes, optParam));
 	}
@@ -637,6 +644,7 @@ void *sceHeapReallocHeapMemoryWithOption(void *heap, void *ptr, unsigned int nby
 	res = sceHeapFreeHeapMemory(heap, ptr);
 
 	sceKernelUnlockLwMutex(&head->lwmtx, 1);
+	if(res < 0 || PvrHeapFaulted()) return SCE_NULL;
 	return (newptr);
 }
 
@@ -657,6 +665,7 @@ int	_sceHeapQueryBlockInfo(void *heap, void *ptr, unsigned int *puiSize, int *pi
 	int res;
 	int cnt;
 
+	if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {
@@ -773,6 +782,7 @@ int	sceHeapGetTotalFreeSize(void *heap)
 	int		size;
 	int	res;
 
+	if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {
@@ -812,6 +822,7 @@ int	sceHeapGetMallinfo(void *heap, SceHeapMallinfo *pInfo)
 	int fordblks;
 	int res;
 
+    if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {

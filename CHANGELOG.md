@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 原生资源退役首次发生真实完成或所有权错误后，整个设备永久终止新提交、分配和清理，保留未退役 backing、Services 和模块至进程结束。`graphics::Context::terminal_fault` 返回首个操作及原始错误；GL/EGL 错误映射为 `Error::Terminal`，资源析构与关闭保留同一终态。EGL 成功结束后撤掉诊断函数入口，再卸载模块。
+
+- `graphics::Context::target_layout` 以固定 STRIDE 行距计算 RGBA8 色彩存储，`target_footprint` 显式查询同参数 GXM RTData 大小；`memory_usage` 分别采样纹理堆保留/使用、已注册存储、RTData 实际映射及设备子分配。计数随真实分配/释放成功更新，历史峰值分域保留。两个诊断 getter 通过现有 proc-address 表加载，运行模块需同步重建。
+
 - `graphics::Context::upload_bc_texture` 校验并完整替换 BC1/BC3 内容；共用首次上传的块布局校验与 Vita 重排，供已完成使用的同格式纹理复用。
 - 原生 BC1/BC3 同格式、同尺寸的完整替换在传输与 GPU 使用均已完成时复用设备存储；其余情况保留原分配和 ghost 路径。应用需随包更新重新构建的 `libGLESv2.suprx`。
 
@@ -17,7 +21,7 @@
 - USP 采样描述独立传递 gamma 与各向异性标志；按 SGX 核心元数据区分 gamma 输出的 F16 与 U16 通道。
 
 - `graphics::Context::finish` 接收原生 GPU 提交或等待失败，防止失败被当作完成后提前回收资源。
-- EGL 同步对象分阶段释放：失败时保留有效描述符和完成状态，后续回收可安全重试。
+- EGL 同步对象按同步信息和设备存储的实际释放阶段更新；失败时保留描述符与 backing，并使设备进入永久终态。
 
 - `platform::ime` 增加系统键盘所有权接口，固定保存原生缓冲与回调状态，显式处理编辑、确认、关闭和错误。
 

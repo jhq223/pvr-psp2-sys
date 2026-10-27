@@ -1196,7 +1196,9 @@ GL_API_EXT void APIENTRY glGetBufferPointervOES(GLenum target, GLenum pname, voi
 GL_APICALL GLenum GL_APIENTRY glGetError(void)
 {
     IMG_INT32 i32Error;
-    __GLES2_GET_CONTEXT_RETURN(GL_NO_ERROR);
+    GLES2Context *gc = (GLES2Context *)OGLES2_GetTLSValue();
+    if(!gc) return GL_NO_ERROR;
+    if(KrkrDeviceFaulted(gc->psSysContext)) return GL_INVALID_OPERATION;
 
 	PVR_DPF((PVR_DBG_CALLTRACE,"glGetError"));
 

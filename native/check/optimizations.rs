@@ -231,6 +231,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             "heap_allocation",
             "opengles2/psp2/heap.c",
             vec![
+                "static int RetireHeapBlock(",
                 "static unsigned int TrimSpare(",
                 "unsigned int sceHeapTrimEmpty(",
                 "void *sceHeapAllocHeapMemoryWithReport(",
@@ -240,7 +241,12 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         (
             "heap_release",
             "opengles2/psp2/heap.c",
-            vec!["int\tsceHeapFreeHeapMemory("],
+            vec![
+                "int\tsceHeapFreeHeapMemory(",
+                "int\t_sceHeapQueryBlockInfo(",
+                "void *sceHeapReallocHeapMemoryWithOption(",
+                "int\tsceHeapGetTotalFreeSize(",
+            ],
         ),
         (
             "heap_device_mem",
@@ -430,7 +436,13 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "error_origin",
     ] {
         let executable = output.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-        run(Command::new(compiler)
+        let mut command = Command::new(compiler);
+        if !matches!(name, "heap_allocation" | "heap_reuse" | "heap_layout") {
+            command
+                .arg("-include")
+                .arg(root.join("native/tests/healthy_device.h"));
+        }
+        run(command
             .args([
                 "-std=c11",
                 "-Wall",

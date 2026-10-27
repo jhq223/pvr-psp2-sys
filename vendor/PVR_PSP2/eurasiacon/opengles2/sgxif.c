@@ -2334,6 +2334,7 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 {
 	IMG_EGLERROR eError;
 
+    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_EGL_GENERIC_ERROR;
 	if(!ValidateMemory(gc))
 	{
 		return IMG_EGL_MEMORY_INVALID_ERROR;
@@ -2353,6 +2354,7 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 
 			if(eError != IMG_EGL_NO_ERROR)
 			{
+                KrkrDeviceFault(gc->psSysContext, "render-submit", eError);
 				return eError;
 			}
 		}
@@ -2365,7 +2367,7 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 	{
 		/* Wait for the TA */
 		if(!WaitForTA(gc))
-			return IMG_EGL_GENERIC_ERROR;
+			{ KrkrDeviceFault(gc->psSysContext, "render-wait", 0); return IMG_EGL_GENERIC_ERROR; }
 	}
 
 	if(ui32KickFlags & GLES2_SCHEDULE_HW_WAIT_FOR_3D)
@@ -2380,20 +2382,20 @@ IMG_INTERNAL IMG_EGLERROR ScheduleTA(GLES2Context *gc, EGLRenderSurface *psRende
 			{
 				/* Wait for the 3D core */
 				if(!WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sReadParams.psSyncInfo))
-					return IMG_EGL_GENERIC_ERROR;
+					{ KrkrDeviceFault(gc->psSysContext, "render-wait", 0); return IMG_EGL_GENERIC_ERROR; }
 			}
 			else
 			{
 				/* Wait for the 3D core */
 				if(!WaitForRender(gc, gc->sFrameBuffer.sDefaultFrameBuffer.sDrawParams.psSyncInfo))
-					return IMG_EGL_GENERIC_ERROR;
+					{ KrkrDeviceFault(gc->psSysContext, "render-wait", 0); return IMG_EGL_GENERIC_ERROR; }
 			}
 		}
 		else
 		{
 			/* Wait for the 3D core */
 			if(!WaitForRender(gc, psRenderSurface->psSyncInfo))
-				return IMG_EGL_GENERIC_ERROR;
+				{ KrkrDeviceFault(gc->psSysContext, "render-wait", 0); return IMG_EGL_GENERIC_ERROR; }
 		}
 	}
 

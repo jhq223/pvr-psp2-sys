@@ -23,6 +23,14 @@ SRVPixelFormat;
 
 extern const SRVPixelFormat gasSRVPixelFormat[];
 
+SceUID KrkrAllocRenderTargetBlock(SrvSysContext *, const IMG_CHAR *, IMG_UINT32);
+IMG_INT32 KrkrFreeRenderTargetBlock(SrvSysContext *, SceUID);
+IMG_VOID KrkrDirectDeviceAllocated(SrvSysContext *, IMG_UINT32);
+IMG_VOID KrkrDirectDeviceFreed(SrvSysContext *, IMG_UINT32);
+IMG_VOID KrkrSurfaceCreated(SrvSysContext *);
+IMG_VOID KrkrSurfaceRetired(SrvSysContext *);
+IMG_INT32 KrkrQueryDriverMemory(SrvSysContext *, PvrDriverMemorySnapshot *);
+
 IMG_BOOL SRV_ServicesInit(SrvSysContext *psSysContext, IMGEGLAppHints *psAppHints, IMG_FLOAT fCPUSpeed);
 
 IMG_BOOL SRV_ServicesDeInit(SrvSysContext *psSysContext);

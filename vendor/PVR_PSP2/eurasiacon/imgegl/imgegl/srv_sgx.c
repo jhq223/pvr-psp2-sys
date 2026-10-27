@@ -30,6 +30,7 @@
 #include "usegen.h"
 #include "render_target_alloc.h"
 #include "render_command_alloc.h"
+#include "render_target_retire.h"
 /******************************************************************************
  Function Name      : SRV_SGXServicesInit
  Inputs             : psSysContext
@@ -152,6 +153,7 @@ IMG_INTERNAL IMG_BOOL SRV_SGXServicesInit(SrvSysContext *psSysContext, IMGEGLApp
 		goto ServInit_fail;
 	}
 
+    psSysContext->clientInfoOwned = IMG_TRUE;
 	psSysContext->sHWInfo.uPDSExecBase.uiAddr = 0;
 	psSysContext->sHWInfo.uUSEExecBase.uiAddr = 0;
 
@@ -177,6 +179,9 @@ IMG_INTERNAL IMG_BOOL SRV_SGXServicesInit(SrvSysContext *psSysContext, IMGEGLApp
 	if (PVRSRVRegisterMemBlock(&psSysContext->s3D, psSysContext->hDriverMemUID, &psSysContext->hPerProcRef, IMG_FALSE))
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVRegisterMemBlock failed"));
+        IMG_INT32 result = sceKernelFreeMemBlock(psSysContext->hDriverMemUID);
+        if(result < 0) return KrkrDeviceFault(psSysContext, "services-register-rollback", result);
+        psSysContext->hDriverMemUID = 0;
 		goto ServInit_fail;
 	}
 
@@ -190,6 +195,9 @@ IMG_INTERNAL IMG_BOOL SRV_SGXServicesInit(SrvSysContext *psSysContext, IMGEGLApp
 	if (PVRSRVRegisterMemBlock(&psSysContext->s3D, psSysContext->h3DParamBufMemUID, &psSysContext->hPerProcRef, IMG_TRUE))
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVRegisterMemBlock failed"));
+        IMG_INT32 result = sceKernelFreeMemBlock(psSysContext->h3DParamBufMemUID);
+        if(result < 0) return KrkrDeviceFault(psSysContext, "services-register-rollback", result);
+        psSysContext->h3DParamBufMemUID = 0;
 		goto ServInit_fail;
 	}
 
@@ -244,106 +252,74 @@ ServInit_fail:
  Returns            : success
  Description        : DeInitialises the services.
 ************************************************************************************/
-IMG_INTERNAL IMG_BOOL SRV_SGXServicesDeInit(SrvSysContext *psSysContext)
+IMG_INTERNAL IMG_BOOL SRV_SGXServicesDeInit(SrvSysContext *context)
 {
-	if (SGXDestroyTransferContext(&psSysContext->s3D, psSysContext->hTransferContext, CLEANUP_WITH_POLL) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"Couldn't destroy transfer queue"));
-        /* continue cleaning up */
-	}
-	psSysContext->hTransferContext = (IMG_HANDLE)0;
-
-	if(SGXDestroyRenderContext(&psSysContext->s3D,
-                               psSysContext->hRenderContext,
-			                   psSysContext->psVisTestResults,
-							   CLEANUP_WITH_POLL) != PVRSRV_OK)
-	{
-	    PVR_DPF((PVR_DBG_ERROR,"Couldn't destroy render context"));
-	    /* continue cleaning up */
-	}
-	psSysContext->hRenderContext = (IMG_HANDLE)0;
-
-	if (psSysContext->h3DParamBufMemUID > 0)
-	{
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, psSysContext->h3DParamBufMemUID);
-		sceKernelFreeMemBlock(psSysContext->h3DParamBufMemUID);
-	}
-
-	if (psSysContext->hDriverMemUID > 0)
-	{
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, psSysContext->hDriverMemUID);
-		sceKernelFreeMemBlock(psSysContext->hDriverMemUID);
-	}
-
-#if (defined(TIMING) || defined(DEBUG))
-#if defined(__linux__)
-	if(psSysContext->sHWInfo.sMiscInfo.ui32StatePresent & PVRSRV_MISC_INFO_TIMER_PRESENT)
-	{
-		PVRSRVReleaseTimerRegister();
-	}
-#endif
-#endif
-
-	if(PVRSRVReleaseMiscInfo(psSysContext->psConnection, &psSysContext->sHWInfo.sMiscInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"Couldn't release Misc info"));
-
-		return IMG_FALSE;
-	}
-
-	if(SGXReleaseClientInfo(&psSysContext->s3D, &psSysContext->sHWInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"Couldn't release HW info"));
-
-		return IMG_FALSE;
-	}
-
+    PVRSRV_ERROR error;
+    IMG_INT32 result;
+    if(KrkrDeviceFaulted(context)) return IMG_FALSE;
+    if(!context->psConnection) return IMG_TRUE;
+    if(context->hTransferContext)
+    {
+        error = SGXDestroyTransferContext(&context->s3D, context->hTransferContext, CLEANUP_WITH_POLL);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-transfer", error);
+        context->hTransferContext = IMG_NULL;
+    }
+    if(context->hRenderContext)
+    {
+        error = SGXDestroyRenderContext(&context->s3D, context->hRenderContext,
+            context->psVisTestResults, CLEANUP_WITH_POLL);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-render", error);
+        context->hRenderContext = IMG_NULL;
+    }
 #if defined(DEBUG)
-	/* Report device memory leaks and free them */
-	if(psSysContext->ui32CurrentAllocations)
-	{
-		IMG_UINT32 i;
-
-		PVR_DPF((PVR_DBG_ERROR,"SRV_SGXServicesDeInit: %d device memory leaks will be freed", psSysContext->ui32CurrentAllocations));
-
-		for(i=0; i<psSysContext->ui32CurrentAllocations; i++)
-		{
-			DevMemAllocation *psAllocation = &psSysContext->psDevMemAllocations[i];
-
-			PVR_DPF((PVR_DBG_ERROR,"SRV_SGXServicesDeInit: Freeing leak allocated at %s:%d, pointing to device address 0x%X, %d bytes",
-				psAllocation->pszFile, psAllocation->u32Line, psAllocation->psMemInfo->sDevVAddr.uiAddr,
-				psAllocation->psMemInfo->uAllocSize));
-
-			PVRSRVFreeDeviceMem(psAllocation->psDevData, psAllocation->psMemInfo);
-		}
-	}
-
-	EGLFree(psSysContext->psDevMemAllocations);
-
-	psSysContext->psDevMemAllocations	 = IMG_NULL;
-	psSysContext->ui32CurrentAllocations = 0;
-	psSysContext->ui32MaxAllocations	 = 0;
-#endif /* defined(DEBUG) */
-
-	if(PVRSRVDestroyDeviceMemContext(&psSysContext->s3D,
-									 psSysContext->hDevMemContext) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"Couldn't destroy device memory context"));
-
-		return IMG_FALSE;
-	}
-	psSysContext->hDevMemContext = (IMG_HANDLE)0;
-
-	if(PVRSRVDisconnect(psSysContext->psConnection) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"Couldn't disconnect from services"));
-
-		return IMG_FALSE;
-	}
-
-	psSysContext->psConnection = IMG_NULL;
-
-	return IMG_TRUE;
+    while(context->ui32CurrentAllocations)
+    {
+        DevMemAllocation *allocation = &context->psDevMemAllocations[context->ui32CurrentAllocations - 1];
+        error = KEGLFreeDeviceMemTrack(context, __FILE__, __LINE__, allocation->psDevData, allocation->psMemInfo);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-allocation", error);
+    }
+    EGLFree(context->psDevMemAllocations);
+    context->psDevMemAllocations = IMG_NULL;
+    context->ui32MaxAllocations = 0;
+#endif
+    if(context->h3DParamBufMemUID > 0)
+    {
+        error = PVRSRVUnregisterMemBlock(&context->s3D, context->h3DParamBufMemUID);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "parameter-unregister", error);
+        result = sceKernelFreeMemBlock(context->h3DParamBufMemUID);
+        if(result < 0) return KrkrDeviceFault(context, "parameter-free", result);
+        context->h3DParamBufMemUID = 0;
+    }
+    if(context->hDriverMemUID > 0)
+    {
+        error = PVRSRVUnregisterMemBlock(&context->s3D, context->hDriverMemUID);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "driver-unregister", error);
+        result = sceKernelFreeMemBlock(context->hDriverMemUID);
+        if(result < 0) return KrkrDeviceFault(context, "driver-free", result);
+        context->hDriverMemUID = 0;
+    }
+    if(context->clientInfoOwned)
+    {
+#if (defined(TIMING) || defined(DEBUG)) && defined(__linux__)
+        if(context->sHWInfo.sMiscInfo.ui32StatePresent & PVRSRV_MISC_INFO_TIMER_PRESENT)
+            PVRSRVReleaseTimerRegister();
+#endif
+        error = PVRSRVReleaseMiscInfo(context->psConnection, &context->sHWInfo.sMiscInfo);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-misc", error);
+        error = SGXReleaseClientInfo(&context->s3D, &context->sHWInfo);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-client", error);
+        context->clientInfoOwned = IMG_FALSE;
+    }
+    if(context->hDevMemContext)
+    {
+        error = PVRSRVDestroyDeviceMemContext(&context->s3D, context->hDevMemContext);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-memory-context", error);
+        context->hDevMemContext = IMG_NULL;
+    }
+    error = PVRSRVDisconnect(context->psConnection);
+    if(error != PVRSRV_OK) return KrkrDeviceFault(context, "services-disconnect", error);
+    context->psConnection = IMG_NULL;
+    return IMG_TRUE;
 }
 
 /*****************************************************************************
@@ -379,7 +355,7 @@ static IMG_BOOL SetupTerminateBuffers(SrvSysContext *psSysContext, EGLTerminateS
 							EURASIA_VDMPDS_BASEADDR_CACHEALIGN,
 							&psTerminateState->psTerminatePDSMemInfo) != PVRSRV_OK)
 	{
-		IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psTerminateState->psTerminateUSEMemInfo);
+		if(!KrkrRetireSurfaceMemory(psSysContext, &psTerminateState->psTerminateUSEMemInfo)) return IMG_FALSE;
 
 		PVR_DPF((PVR_DBG_ERROR,"SetupTerminateBuffers: Couldn't allocate PDS terminate buffer"));
 
@@ -395,8 +371,8 @@ static IMG_BOOL SetupTerminateBuffers(SrvSysContext *psSysContext, EGLTerminateS
 							EURASIA_VDMPDS_BASEADDR_CACHEALIGN,
 							&psTerminateState->psSAUpdatePDSMemInfo) != PVRSRV_OK)
 	{
-		IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psTerminateState->psTerminatePDSMemInfo);
-		IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psTerminateState->psTerminateUSEMemInfo);
+		if(!KrkrRetireSurfaceMemory(psSysContext, &psTerminateState->psTerminatePDSMemInfo)) return IMG_FALSE;
+		if(!KrkrRetireSurfaceMemory(psSysContext, &psTerminateState->psTerminateUSEMemInfo)) return IMG_FALSE;
 
 		PVR_DPF((PVR_DBG_ERROR,"SetupTerminateBuffers: Couldn't allocate PDS SA update terminate buffer"));
 
@@ -504,6 +480,8 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	SceUID hDrvMemBlockForFree;
 	IMG_BOOL bUnused;
 	const IMG_UINT32 ui32RendersPerFrame = 1; // Default
+
+    if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
 
 	psAppHints = (IMGEGLAppHints *)psSysContext->hIMGEGLAppHints;
 
@@ -811,53 +789,24 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXCreateRenderSurface(SrvSysContext *psSysContext,
 	/* Set up ZLS registers */
 	SetupZLSRegs(psSurface, psParams->ui32Width, psParams->ui32Height, bMultiSample);
 
+	KrkrSurfaceCreated(psSysContext);
 	return IMG_TRUE;
 
 
 
 fail_zbuffer_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psSAUpdatePDSMemInfo);
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psTerminatePDSMemInfo);
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psTerminateUSEMemInfo);
-
 fail_terminate_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sUSSEBuffer.psStatusUpdateMemInfo);
-
 fail_usse_status_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sUSSEBuffer.psMemInfo);
-
 fail_usse_buffer_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sPDSBuffer.psStatusUpdateMemInfo);
-
 fail_pds_status_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sPDSBuffer.psMemInfo);
-
 fail_pds_buffer_alloc:
-	IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sRenderStatusUpdate.psMemInfo);
-
 fail_statusval_alloc:
-	PVRSRVFreeSyncInfo(&psSysContext->s3D, psSurface->psRenderSurfaceSyncInfo);
-
 fail_syncinfo_alloc:
-	if(bAllocTwoRT && psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX], &hDrvMemBlockForFree, &bUnused);
-		SGXRemoveRenderTarget(&psSysContext->s3D, psSysContext->hRenderContext, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]);
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-	}
-
 fail_add_rendertarget1:
-	SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[ui32RTIndex], &hDrvMemBlockForFree, &bUnused);
-	SGXRemoveRenderTarget(&psSysContext->s3D, psSysContext->hRenderContext, psSurface->ahRenderTarget[ui32RTIndex]);
-	PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-	sceKernelFreeMemBlock(hDrvMemBlockForFree);
-
 fail_add_rendertarget:
-	PVRSRVDestroyMutex(psSurface->hMutex);
-
 fail_mutex:
-	return IMG_FALSE;
+    KrkrRetireSurfaceStorage(psSysContext, psSurface, IMG_FALSE);
+    return IMG_FALSE;
 }
 
 /***********************************************************************************
@@ -869,156 +818,9 @@ fail_mutex:
 ************************************************************************************/
 IMG_INTERNAL IMG_BOOL KEGL_SGXDestroyRenderSurface(SrvSysContext *psSysContext, EGLRenderSurface *psSurface)
 {
-	IMG_BOOL bSuccess = IMG_TRUE;
-	SceUID hDrvMemBlockForFree;
-	IMG_BOOL bUnused;
-
-	/* Wait for operations on the surface to complete */
-	if(PVRSRVPollForValue(psSysContext->psConnection,
-							psSysContext->sHWInfo.sMiscInfo.hOSGlobalEvent,
-							psSurface->sPDSBuffer.pui32ReadOffset,
-							psSurface->sPDSBuffer.ui32CommittedHWOffsetInBytes,
-							0xFFFFFFFF,
-							1000,
-							1000) != PVRSRV_OK)
-	{
-		bSuccess = IMG_FALSE;
-	}
-
-#if defined(PDUMP)
-	PVRSRVPDumpMemPol( psSysContext->psConnection,
-					   psSurface->sPDSBuffer.psStatusUpdateMemInfo,
-					   0, 								/* Offset */
-					   psSurface->sPDSBuffer.ui32CommittedHWOffsetInBytes,
-					   0xFFFFFFFF, 						/* Mask */
-					   PDUMP_POLL_OPERATOR_EQUAL,		/* Operator */
-					   0); 								/* Flags */
-#endif
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psTerminatePDSMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free PDS terminate buffer"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psSAUpdatePDSMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free PDS SA update terminate buffer"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sTerm.psTerminateUSEMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free USSE terminate buffer"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sPDSBuffer.psMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free PDS buffer"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sUSSEBuffer.psMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free USSE buffer"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(PVRSRVFreeSyncInfo(&psSysContext->s3D, psSurface->psRenderSurfaceSyncInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free sync meminfo"));
-
-		psSurface->psRenderSurfaceSyncInfo	= IMG_NULL;
-		psSurface->psSyncInfo				= IMG_NULL;
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sRenderStatusUpdate.psMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free render status value meminfo"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sUSSEBuffer.psStatusUpdateMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free USSE buffer status update object"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(IMGEGLFREEDEVICEMEM(&psSysContext->s3D, psSurface->sPDSBuffer.psStatusUpdateMemInfo) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't free PDS buffer status update object"));
-
-		bSuccess = IMG_FALSE;
-	}
-
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX], &hDrvMemBlockForFree, &bUnused);
-
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-	}
-
-	psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
-
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX], &hDrvMemBlockForFree, &bUnused);
-
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-	}
-
-	psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
-
-	if(psSurface->psZSBufferMemInfo)
-	{
-		if(PVRSRVUnmapMemoryFromGpu(&psSysContext->s3D, psSurface->psZSBufferMemInfo->pvLinAddr, 0, IMG_FALSE) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGLDestroyRenderSurface: Couldn't unmap ZLS buffer"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		sceKernelFreeMemBlock(psSurface->hZSBufferMemBlockUID);
-	}
-
-	PVRSRVFreeUserModeMem(psSurface->psZSBufferMemInfo);
-
-	psSurface->psZSBufferMemInfo = IMG_NULL;
-
-	
-	PVRSRVDestroyMutex(psSurface->hMutex);
-
-	return bSuccess;
+    if(!KrkrRetireSurfaceStorage(psSysContext, psSurface, IMG_TRUE)) return IMG_FALSE;
+    KrkrSurfaceRetired(psSysContext);
+    return IMG_TRUE;
 }
 
 /***********************************************************************************
@@ -1043,6 +845,8 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXResizeRenderSurface(SrvSysContext		*psSysContext,
 	IMG_BOOL bUnused;
 	const IMG_UINT32 ui32RendersPerFrame = 1;
 
+    if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
+
 	if(bMultiSample)
 	{
 		ui32MultiSample = 2;
@@ -1056,17 +860,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXResizeRenderSurface(SrvSysContext		*psSysContext,
 		ui32RTIndex = EGL_RENDER_TARGET_NOAA_INDEX;
 	}
 
-	/* Wait for operations on the surface to complete */
-	if (PVRSRVPollForValue(psSysContext->psConnection,
-		psSysContext->sHWInfo.sMiscInfo.hOSGlobalEvent,
-		psSurface->sPDSBuffer.pui32ReadOffset,
-		psSurface->sPDSBuffer.ui32CommittedHWOffsetInBytes,
-		0xFFFFFFFF,
-		1000,
-		1000) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "KEGL_SGXResizeRenderSurface: Timeout failed on waiting for previous render op"));
-	}
+    if(!KrkrWaitRenderSurface(psSysContext, psSurface)) return IMG_FALSE;
 
 #if defined(PDUMP)
 	PVRSRVPDumpMemPol( psSysContext->psConnection,
@@ -1078,61 +872,11 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXResizeRenderSurface(SrvSysContext		*psSysContext,
 					   0); 								/* Flags */
 #endif
 
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX], &hDrvMemBlockForFree, &bUnused);
+    if(!KrkrRetireRenderTarget(psSysContext, &psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]) ||
+       !KrkrRetireRenderTarget(psSysContext, &psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX])) return IMG_FALSE;
 
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGL_SGXResizeRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-
-		psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
-	}
-
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX], &hDrvMemBlockForFree, &bUnused);
-
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGL_SGXResizeRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-
-		psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
-	}
-
-	if(psSurface->psZSBufferMemInfo)
-	{
-		if (PVRSRVUnmapMemoryFromGpu(&psSysContext->s3D, psSurface->psZSBufferMemInfo->pvLinAddr, 0, IMG_FALSE) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "KEGL_SGXResizeRenderSurface: Couldn't unmap ZLS buffer"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		sceKernelFreeMemBlock(psSurface->hZSBufferMemBlockUID);
-
-		PVRSRVFreeUserModeMem(psSurface->psZSBufferMemInfo);
-
-		psSurface->psZSBufferMemInfo = IMG_NULL;
-
-		bHadZSBuffer = IMG_TRUE;
-	}
+    bHadZSBuffer = psSurface->psZSBufferMemInfo != IMG_NULL;
+    if(!KrkrRetireSurfaceZs(psSysContext, psSurface)) return IMG_FALSE;
 
 	sAddRenderTarget.ui32Flags			= SGX_ADDRTFLAGS_USEOGLMODE;
 	sAddRenderTarget.ui32NumRTData = ui32RendersPerFrame * 2;
@@ -1277,17 +1021,7 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXHibernateRenderSurface(SrvSysContext		*psSysContex
 	SceUID hDrvMemBlockForFree;
 	IMG_BOOL bUnused;
 
-	/* Wait for operations on the surface to complete */
-	if (PVRSRVPollForValue(psSysContext->psConnection,
-		psSysContext->sHWInfo.sMiscInfo.hOSGlobalEvent,
-		psSurface->sPDSBuffer.pui32ReadOffset,
-		psSurface->sPDSBuffer.ui32CommittedHWOffsetInBytes,
-		0xFFFFFFFF,
-		1000,
-		1000) != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "KEGL_SGXResizeRenderSurface: Timeout failed on waiting for previous render op"));
-	}
+    if(!KrkrWaitRenderSurface(psSysContext, psSurface)) return IMG_FALSE;
 
 #if defined(PDUMP)
 	PVRSRVPDumpMemPol( psSysContext->psConnection,
@@ -1299,67 +1033,13 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXHibernateRenderSurface(SrvSysContext		*psSysContex
 					   0); 								/* Flags */
 #endif
 
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX], &hDrvMemBlockForFree, &bUnused);
-
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGL_SGXHibernateRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-
-		psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX] = IMG_NULL;
-	}
-
-	if(psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX])
-	{
-		SGXGetRenderTargetDriverMemBlock(&psSysContext->s3D, psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX], &hDrvMemBlockForFree, &bUnused);
-
-		if(SGXRemoveRenderTarget (&psSysContext->s3D,
-								psSysContext->hRenderContext,
-								psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX]) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR,"KEGL_SGXHibernateRenderSurface: Couldn't remove render target"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		PVRSRVUnregisterMemBlock(&psSysContext->s3D, hDrvMemBlockForFree);
-		sceKernelFreeMemBlock(hDrvMemBlockForFree);
-
-		psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX] = IMG_NULL;
-	}
-
-	if(psSurface->psZSBufferMemInfo)
-	{
-		if (PVRSRVUnmapMemoryFromGpu(&psSysContext->s3D, psSurface->psZSBufferMemInfo->pvLinAddr, 0, IMG_FALSE) != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "KEGL_SGXHibernateRenderSurface: Couldn't unmap ZLS buffer"));
-
-			bSuccess = IMG_FALSE;
-		}
-
-		sceKernelFreeMemBlock(psSurface->hZSBufferMemBlockUID);
-
-		PVRSRVFreeUserModeMem(psSurface->psZSBufferMemInfo);
-
-		psSurface->psZSBufferMemInfo = IMG_NULL;
+    if(!KrkrRetireRenderTarget(psSysContext, &psSurface->ahRenderTarget[EGL_RENDER_TARGET_NOAA_INDEX]) ||
+       !KrkrRetireRenderTarget(psSysContext, &psSurface->ahRenderTarget[EGL_RENDER_TARGET_AA_INDEX])) return IMG_FALSE;
 
 #if defined(EGL_EXTENSION_IMG_EGL_HIBERNATION)
-		psSurface->bHadZSBuffer = IMG_TRUE;
-	}
-	else
-	{
-		psSurface->bHadZSBuffer = IMG_FALSE;
-#endif /* defined(EGL_EXTENSION_IMG_EGL_HIBERNATION) */
-	}
+    psSurface->bHadZSBuffer = psSurface->psZSBufferMemInfo != IMG_NULL;
+#endif
+    if(!KrkrRetireSurfaceZs(psSysContext, psSurface)) return IMG_FALSE;
 
 	return bSuccess;
 }
@@ -1377,6 +1057,8 @@ IMG_INTERNAL IMG_BOOL KEGL_SGXAwakeRenderSurface(SrvSysContext		*psSysContext,
 
 	IMG_UINT32 ui32MultiSample = 0, ui32RTIndex;
 	IMG_UINT32 ui32SizeInBytes, ui32DriverMemSize;
+
+    if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
 
 	if(psSurface->bMultiSample)
 	{

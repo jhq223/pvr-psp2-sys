@@ -20,6 +20,12 @@
 
 带深度/模板附件或共享上下文的表面由应用管理。纹理存储继续占用内存，应用应及时释放用完的图像。
 
+## 内存用量
+
+`graphics::Context::target_layout(size)` 用固定布局计算单采样 RGBA8 色彩存储；Vita STRIDE 的行距按 8 texel 对齐。逻辑尺寸和采样坐标保持原尺寸。`target_footprint(size)` 在显式诊断时额外调用与驱动相同参数的 GXM 查询，返回独立 USER_NC RTData 大小。
+
+`memory_usage()` 通过本次构建的两个 proc-address getter 读取原生当前用量。纹理 USER_CDRAM/USER_NC 堆分别报告保留、使用和块数；SGXDriver USER_NC、SGXParamBuffer USER_CDRAM 分别报告注册块；RTData 按实际 kernel 映射成功分配/释放计量。PDS、USSE、状态等直接设备分配报告子分配使用量，属于已注册存储，不能再与保留量相加。各域峰值独立，各纹理堆是相邻采样；它们不表示同一时点的总物理峰值。主机 EGL 返回布局及 `None` 原生内存诊断。
+
 ## GPU 完成通知
 
 查询 `EGL_KHR_fence_sync` 后，用 `eglCreateSyncKHR` 在当前上下文插入完成标记。`eglClientWaitSyncKHR` 的零超时调用查询一次，有限超时按经过时间等待。应用应在完成后释放提交持有的资源。销毁尚未完成的 sync 会保留其底层存储，直至 GPU 与等待者都已结束。

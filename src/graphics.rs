@@ -12,52 +12,17 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+mod fault;
+mod memory;
+mod types;
+pub use fault::DeviceFault;
+pub use memory::{DriverMemoryUsage, HeapMemoryUsage, TargetFootprint, TargetLayout};
+pub use types::{Capabilities, CompletionMode, DriverInfo, Error};
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// GPU command completion supplied by the active EGL driver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompletionMode {
-    Fence,
-}
-/// Native failures retain their operation and actual device error.
-#[derive(Debug)]
-pub enum Error {
-    Invalid(&'static str),
-    Unsupported(&'static str),
-    Library {
-        library: &'static str,
-        message: String,
-    },
-    Sdk(&'static str, i32),
-    Egl(&'static str, i32),
-    Gl(&'static str, u32),
-    Shader {
-        stage: &'static str,
-        log: String,
-    },
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for Error {}
 type Result<T> = std::result::Result<T, Error>;
 
-/// Capabilities queried once from this context's actual driver.
-#[derive(Clone, Debug)]
-pub struct Capabilities {
-    pub max_texture_size: u32,
-    pub max_texture_units: u32,
-    pub max_vertex_attributes: u32,
-    pub max_fragment_uniform_vectors: u32,
-    pub bc: bool,
-    pub bgra: bool,
-    pub half_float: bool,
-    pub indices_u32: bool,
-    pub shader_binary: bool,
-    pub completion: CompletionMode,
-}
 #[cfg(target_os = "vita")]
 #[path = "graphics/native_vita.rs"]
 mod native;
@@ -76,20 +41,13 @@ struct FenceApi {
     destroy: DestroySync,
     wait: WaitSync,
 }
-/// Driver strings queried from the current OpenGL ES context.
-#[derive(Clone, Debug)]
-pub struct DriverInfo {
-    pub vendor: String,
-    pub renderer: String,
-    pub version: String,
-    pub shading_language: String,
-}
 struct Inner {
     gl: glow::Context,
     caps: Capabilities,
     native: Native,
     vsync: Cell<bool>,
     fences: FenceApi,
+    memory: Option<memory::Api>,
     enabled_attributes: Vec<Cell<bool>>,
 }
 /// An owned GPU command fence; polling performs one native nonblocking query.
@@ -107,25 +65,41 @@ impl Fence {
         self.wait_ns(timeout.as_nanos().min(u128::from(u64::MAX - 1)) as u64)
     }
     fn wait_ns(&self, timeout: u64) -> Result<bool> {
+        self.owner.native.failure.check()?;
         let api = self.owner.fences;
         let status = unsafe { (api.wait)(self.owner.native.display, self.sync, 0, timeout) };
         match status {
             0x30f6 => Ok(true),
             0x30f5 => Ok(false),
-            _ => Err(self.owner.native.error("eglClientWaitSyncKHR")),
+            _ => Err(self.owner.native.failure.refresh().map_or_else(
+                || self.owner.native.error("eglClientWaitSyncKHR"),
+                Error::Terminal,
+            )),
         }
     }
 }
 impl Drop for Fence {
     fn drop(&mut self) {
-        unsafe {
+        self.owner.retire(|_| unsafe {
             (self.owner.fences.destroy)(self.owner.native.display, self.sync);
-        }
+        });
     }
 }
 
+impl Inner {
+    fn retire(&self, release: impl FnOnce(&glow::Context)) {
+        if self.native.failure.refresh().is_some() {
+            return;
+        }
+        release(&self.gl);
+        self.native.failure.refresh();
+    }
+}
 impl Drop for Inner {
     fn drop(&mut self) {
+        if self.native.failure.refresh().is_some() {
+            return;
+        }
         if !self.native.context.is_null() {
             unsafe {
                 self.gl.finish();
@@ -197,6 +171,7 @@ impl Context {
                 completion: CompletionMode::Fence,
             }
         };
+        let memory = memory::Api::load(&native);
         let context = Self(Rc::new(Inner {
             enabled_attributes: (0..caps.max_vertex_attributes)
                 .map(|_| Cell::new(false))
@@ -206,6 +181,7 @@ impl Context {
             native,
             vsync: Cell::new(vsync),
             fences,
+            memory,
         }));
         context.check("context initialization")?;
         Ok(context)
@@ -213,6 +189,9 @@ impl Context {
     /// Close only after every resource/fence owner is released. A rejected or
     /// failed close returns the same context, retaining remaining native owners.
     pub fn close(mut self) -> std::result::Result<(), (Self, Error)> {
+        if let Some(fault) = self.terminal_fault() {
+            return Err((self, Error::Terminal(fault)));
+        }
         let Some(inner) = Rc::get_mut(&mut self.0) else {
             return Err((self, Error::Invalid("graphics resources still own context")));
         };
@@ -222,6 +201,11 @@ impl Context {
             }
         }
         if let Err(error) = inner.native.close() {
+            let error = inner
+                .native
+                .failure
+                .refresh()
+                .map_or(error, Error::Terminal);
             return Err((self, error));
         }
         Ok(())
@@ -257,14 +241,14 @@ impl Context {
     }
     pub fn set_vsync(&self, enabled: bool) -> Result<()> {
         self.open()?;
-        self.0.native.set_vsync(enabled)?;
+        self.native_result(self.0.native.set_vsync(enabled))?;
         self.0.vsync.set(enabled);
         Ok(())
     }
     /// Native buffer exchange. It is independent of GPU completion accounting.
     pub fn present(&self) -> Result<()> {
         self.open()?;
-        self.0.native.present()
+        self.native_result(self.0.native.present())
     }
     /// Insert a hardware fence for preceding graphics commands.
     pub fn fence(&self) -> Result<Fence> {
@@ -272,7 +256,7 @@ impl Context {
         let api = self.0.fences;
         let sync = unsafe { (api.create)(self.0.native.display, 0x30f9, [EGL_NONE].as_ptr()) };
         if sync.is_null() {
-            return Err(self.0.native.error("eglCreateSyncKHR"));
+            return self.native_result(Err(self.0.native.error("eglCreateSyncKHR")));
         }
         Ok(Fence {
             owner: self.0.clone(),
@@ -301,7 +285,9 @@ impl Context {
         if code == glow::NO_ERROR {
             Ok(())
         } else {
-            Err(Error::Gl(operation, code))
+            Err(self
+                .terminal_fault()
+                .map_or(Error::Gl(operation, code), Error::Terminal))
         }
     }
     fn same(&self, owner: &Rc<Inner>) -> Result<()> {
@@ -451,13 +437,25 @@ impl Context {
             gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
             #[cfg(target_os = "vita")]
             gl.compressed_tex_image_2d(
-                glow::TEXTURE_2D, 0, format, size[0] as i32, size[1] as i32,
-                0, payload.len() as i32, payload,
+                glow::TEXTURE_2D,
+                0,
+                format,
+                size[0] as i32,
+                size[1] as i32,
+                0,
+                payload.len() as i32,
+                payload,
             );
             #[cfg(not(target_os = "vita"))]
             gl.compressed_tex_sub_image_2d(
-                glow::TEXTURE_2D, 0, 0, 0, size[0] as i32, size[1] as i32,
-                format as u32, glow::CompressedPixelUnpackData::Slice(payload),
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                size[0] as i32,
+                size[1] as i32,
+                format as u32,
+                glow::CompressedPixelUnpackData::Slice(payload),
             );
         }
         self.check("compressed texture replacement")
@@ -554,37 +552,40 @@ impl Context {
         self.check("texture repeat")
     }
     pub fn framebuffer(&self, texture: &Texture) -> Result<Framebuffer> {
-        self.same(&texture.0.owner)?;
-        if texture.0.format != TextureFormat::Rgba8 {
-            return Err(Error::Unsupported("color attachment format"));
-        }
-        let name = unsafe {
-            self.0
-                .gl
-                .create_framebuffer()
-                .map_err(|_| Error::Invalid("framebuffer allocation"))?
-        };
-        let target = Framebuffer(Rc::new(FramebufferInner {
-            owner: self.0.clone(),
-            name,
-            texture: texture.clone(),
-        }));
-        unsafe {
-            let gl = &self.0.gl;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(name));
-            gl.framebuffer_texture_2d(
-                glow::FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(texture.0.name),
-                0,
-            );
-            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
-                return Err(Error::Unsupported("incomplete color framebuffer"));
+        let outcome = (|| {
+            self.same(&texture.0.owner)?;
+            if texture.0.format != TextureFormat::Rgba8 {
+                return Err(Error::Unsupported("color attachment format"));
             }
-        }
-        self.check("framebuffer attachment")?;
-        Ok(target)
+            let name = unsafe {
+                self.0
+                    .gl
+                    .create_framebuffer()
+                    .map_err(|_| Error::Invalid("framebuffer allocation"))?
+            };
+            let target = Framebuffer(Rc::new(FramebufferInner {
+                owner: self.0.clone(),
+                name,
+                texture: texture.clone(),
+            }));
+            unsafe {
+                let gl = &self.0.gl;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(name));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(texture.0.name),
+                    0,
+                );
+                if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                    return Err(Error::Unsupported("incomplete color framebuffer"));
+                }
+            }
+            self.check("framebuffer attachment")?;
+            Ok(target)
+        })();
+        self.native_result(outcome)
     }
     /// Load the supplied target shader payloads, bind attributes and link an owned program.
     pub fn create_program(
@@ -593,89 +594,92 @@ impl Context {
         fragment: ShaderCode<'_>,
         attributes: &[AttributeBinding<'_>],
     ) -> Result<Program> {
-        self.open()?;
-        let gl = &self.0.gl;
-        let name = unsafe {
-            gl.create_program()
-                .map_err(|_| Error::Invalid("program allocation"))?
-        };
-        let program = Program(Rc::new(ProgramInner {
-            owner: self.0.clone(),
-            name,
-        }));
-        for (stage, label, code) in [
-            (glow::VERTEX_SHADER, "vertex", vertex),
-            (glow::FRAGMENT_SHADER, "fragment", fragment),
-        ] {
-            let shader = unsafe {
-                gl.create_shader(stage)
-                    .map_err(|_| Error::Invalid("shader allocation"))?
+        let outcome = (|| {
+            self.open()?;
+            let gl = &self.0.gl;
+            let name = unsafe {
+                gl.create_program()
+                    .map_err(|_| Error::Invalid("program allocation"))?
             };
-            let result = (|| {
+            let program = Program(Rc::new(ProgramInner {
+                owner: self.0.clone(),
+                name,
+            }));
+            for (stage, label, code) in [
+                (glow::VERTEX_SHADER, "vertex", vertex),
+                (glow::FRAGMENT_SHADER, "fragment", fragment),
+            ] {
+                let shader = unsafe {
+                    gl.create_shader(stage)
+                        .map_err(|_| Error::Invalid("shader allocation"))?
+                };
+                let result = (|| {
+                    unsafe {
+                        match code {
+                            #[cfg(not(target_os = "vita"))]
+                            ShaderCode::Source(source) => {
+                                gl.shader_source(shader, source);
+                                gl.compile_shader(shader);
+                            }
+                            ShaderCode::SgxBinary(bytes) => {
+                                if !self.0.caps.shader_binary || bytes.len() > i32::MAX as usize {
+                                    return Err(Error::Unsupported("SGX shader binary"));
+                                }
+                                type Load = unsafe extern "system" fn(
+                                    i32,
+                                    *const u32,
+                                    u32,
+                                    *const core::ffi::c_void,
+                                    i32,
+                                );
+                                let address = self.0.native.proc_address("glShaderBinary");
+                                if address.is_null() {
+                                    return Err(Error::Unsupported("glShaderBinary"));
+                                }
+                                let load: Load = std::mem::transmute(address);
+                                load(
+                                    1,
+                                    &shader.0.get(),
+                                    0x8c0a,
+                                    bytes.as_ptr().cast(),
+                                    bytes.len() as i32,
+                                );
+                            }
+                        }
+                        if !gl.get_shader_compile_status(shader) {
+                            return Err(Error::Shader {
+                                stage: label,
+                                log: gl.get_shader_info_log(shader),
+                            });
+                        }
+                        gl.attach_shader(name, shader);
+                    }
+                    Ok(())
+                })();
                 unsafe {
-                    match code {
-                        #[cfg(not(target_os = "vita"))]
-                        ShaderCode::Source(source) => {
-                            gl.shader_source(shader, source);
-                            gl.compile_shader(shader);
-                        }
-                        ShaderCode::SgxBinary(bytes) => {
-                            if !self.0.caps.shader_binary || bytes.len() > i32::MAX as usize {
-                                return Err(Error::Unsupported("SGX shader binary"));
-                            }
-                            type Load = unsafe extern "system" fn(
-                                i32,
-                                *const u32,
-                                u32,
-                                *const core::ffi::c_void,
-                                i32,
-                            );
-                            let address = self.0.native.proc_address("glShaderBinary");
-                            if address.is_null() {
-                                return Err(Error::Unsupported("glShaderBinary"));
-                            }
-                            let load: Load = std::mem::transmute(address);
-                            load(
-                                1,
-                                &shader.0.get(),
-                                0x8c0a,
-                                bytes.as_ptr().cast(),
-                                bytes.len() as i32,
-                            );
-                        }
-                    }
-                    if !gl.get_shader_compile_status(shader) {
-                        return Err(Error::Shader {
-                            stage: label,
-                            log: gl.get_shader_info_log(shader),
-                        });
-                    }
-                    gl.attach_shader(name, shader);
+                    gl.delete_shader(shader);
                 }
-                Ok(())
-            })();
+                result?;
+            }
             unsafe {
-                gl.delete_shader(shader);
-            }
-            result?;
-        }
-        unsafe {
-            for attribute in attributes {
-                if attribute.location >= self.0.caps.max_vertex_attributes {
-                    return Err(Error::Invalid("attribute location"));
+                for attribute in attributes {
+                    if attribute.location >= self.0.caps.max_vertex_attributes {
+                        return Err(Error::Invalid("attribute location"));
+                    }
+                    gl.bind_attrib_location(name, attribute.location, attribute.name);
                 }
-                gl.bind_attrib_location(name, attribute.location, attribute.name);
+                gl.link_program(name);
+                if !gl.get_program_link_status(name) {
+                    return Err(Error::Shader {
+                        stage: "link",
+                        log: gl.get_program_info_log(name),
+                    });
+                }
             }
-            gl.link_program(name);
-            if !gl.get_program_link_status(name) {
-                return Err(Error::Shader {
-                    stage: "link",
-                    log: gl.get_program_info_log(name),
-                });
-            }
-        }
-        self.check("program link")?;
-        Ok(program)
+            self.check("program link")?;
+            Ok(program)
+        })();
+        self.native_result(outcome)
     }
     /// Interleaved f32 attributes, validated once before GPU upload.
     pub fn vertex_buffer(
@@ -977,127 +981,138 @@ impl Context {
     /// Texture state is updated only when its mode changes. Subsequent ordinary
     /// `draw` calls explicitly restore linear filtering for internal consumers.
     pub fn draw_filtered(&self, draw: Draw<'_>, filter: TextureFilter) -> Result<()> {
-        self.same(&draw.program.0.owner)?;
-        self.same(&draw.vertices.owner)?;
-        self.validate_size(draw.size)?;
-        self.bind_target(draw.target)?;
-        if draw.scissor.is_some_and(|[x, y, w, h]| {
-            x.checked_add(w).is_none_or(|n| n > draw.size[0])
-                || y.checked_add(h).is_none_or(|n| n > draw.size[1])
-        }) {
-            return Err(Error::Invalid("draw scissor"));
-        }
-        if draw.range.start > draw.range.end || draw.range.end > i32::MAX as u32 {
-            return Err(Error::Invalid("draw range"));
-        }
-        if draw.textures.len() > self.0.caps.max_texture_units as usize {
-            return Err(Error::Unsupported("texture unit count"));
-        }
-        for texture in draw.textures {
-            self.same(&texture.0.owner)?;
-            if let Target::Framebuffer(target) = draw.target
-                && Rc::ptr_eq(&texture.0, &target.0.texture.0)
-            {
-                return Err(Error::Invalid("framebuffer texture feedback"));
+        let outcome = (|| {
+            self.same(&draw.program.0.owner)?;
+            self.same(&draw.vertices.owner)?;
+            self.validate_size(draw.size)?;
+            self.bind_target(draw.target)?;
+            if draw.scissor.is_some_and(|[x, y, w, h]| {
+                x.checked_add(w).is_none_or(|n| n > draw.size[0])
+                    || y.checked_add(h).is_none_or(|n| n > draw.size[1])
+            }) {
+                return Err(Error::Invalid("draw scissor"));
             }
-        }
-        if let Some(indices) = draw.indices {
-            self.same(&indices.owner)?;
-            if draw.range.end as usize > indices.count
-                || (draw.range.start != draw.range.end
-                    && indices.maximum as usize >= draw.vertices.count)
-            {
-                return Err(Error::Invalid("indexed vertex bounds"));
+            if draw.range.start > draw.range.end || draw.range.end > i32::MAX as u32 {
+                return Err(Error::Invalid("draw range"));
             }
-        } else if draw.range.end as usize > draw.vertices.count {
-            return Err(Error::Invalid("vertex range"));
-        }
-        unsafe {
-            let gl = &self.0.gl;
-            gl.viewport(0, 0, draw.size[0] as i32, draw.size[1] as i32);
-            gl.disable(glow::DEPTH_TEST);
-            gl.disable(glow::CULL_FACE);
-            gl.color_mask(true, true, true, true);
-            if let Some([x, y, w, h]) = draw.scissor {
-                gl.enable(glow::SCISSOR_TEST);
-                gl.scissor(x as i32, y as i32, w as i32, h as i32);
-            } else {
-                gl.disable(glow::SCISSOR_TEST);
+            if draw.textures.len() > self.0.caps.max_texture_units as usize {
+                return Err(Error::Unsupported("texture unit count"));
             }
-            match draw.blend {
-                Blend::Replace => gl.disable(glow::BLEND),
-                Blend::Premultiplied => {
-                    gl.enable(glow::BLEND);
-                    gl.blend_equation(glow::FUNC_ADD);
-                    gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+            for texture in draw.textures {
+                self.same(&texture.0.owner)?;
+                if let Target::Framebuffer(target) = draw.target
+                    && Rc::ptr_eq(&texture.0, &target.0.texture.0)
+                {
+                    return Err(Error::Invalid("framebuffer texture feedback"));
                 }
             }
-            gl.use_program(Some(draw.program.0.name));
-            for (unit, texture) in draw.textures.iter().enumerate() {
-                gl.active_texture(glow::TEXTURE0 + unit as u32);
-                gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
-                if texture.0.filter.get() != filter {
-                    let mode = match filter {
-                        TextureFilter::Nearest => glow::NEAREST,
-                        TextureFilter::Linear => glow::LINEAR,
-                    };
-                    // The validated texture belongs to this current context.
-                    // GLES2 stores min/mag filtering on the texture object.
-                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, mode as i32);
-                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, mode as i32);
-                    texture.0.filter.set(filter);
-                }
-            }
-            for uniform in draw.uniforms {
-                self.uniform(draw.program, *uniform)?;
-            }
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(draw.vertices.name));
-            // This context owns all attribute state. Keep unchanged layouts
-            // enabled instead of invalidating the driver's vertex fetch state.
-            for (index, enabled) in self.0.enabled_attributes.iter().enumerate() {
-                let wanted = draw
-                    .vertices
-                    .attributes
-                    .iter()
-                    .any(|a| a.location as usize == index);
-                if enabled.get() != wanted {
-                    if wanted {
-                        gl.enable_vertex_attrib_array(index as u32);
-                    } else {
-                        gl.disable_vertex_attrib_array(index as u32);
-                    }
-                    enabled.set(wanted);
-                }
-            }
-            for a in &draw.vertices.attributes {
-                gl.vertex_attrib_pointer_f32(
-                    a.location,
-                    a.components as i32,
-                    glow::FLOAT,
-                    false,
-                    (draw.vertices.stride * 4) as i32,
-                    (a.offset * 4) as i32,
-                );
-            }
-            let count = (draw.range.end - draw.range.start) as i32;
             if let Some(indices) = draw.indices {
-                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(indices.name));
-                gl.draw_elements(
-                    glow::TRIANGLES,
-                    count,
-                    if indices.width == 2 {
-                        glow::UNSIGNED_SHORT
-                    } else {
-                        glow::UNSIGNED_INT
-                    },
-                    (draw.range.start as usize * indices.width) as i32,
-                );
-            } else {
-                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
-                gl.draw_arrays(glow::TRIANGLES, draw.range.start as i32, count);
+                self.same(&indices.owner)?;
+                if draw.range.end as usize > indices.count
+                    || (draw.range.start != draw.range.end
+                        && indices.maximum as usize >= draw.vertices.count)
+                {
+                    return Err(Error::Invalid("indexed vertex bounds"));
+                }
+            } else if draw.range.end as usize > draw.vertices.count {
+                return Err(Error::Invalid("vertex range"));
             }
-        }
-        self.check("draw")
+            unsafe {
+                let gl = &self.0.gl;
+                gl.viewport(0, 0, draw.size[0] as i32, draw.size[1] as i32);
+                gl.disable(glow::DEPTH_TEST);
+                gl.disable(glow::CULL_FACE);
+                gl.color_mask(true, true, true, true);
+                if let Some([x, y, w, h]) = draw.scissor {
+                    gl.enable(glow::SCISSOR_TEST);
+                    gl.scissor(x as i32, y as i32, w as i32, h as i32);
+                } else {
+                    gl.disable(glow::SCISSOR_TEST);
+                }
+                match draw.blend {
+                    Blend::Replace => gl.disable(glow::BLEND),
+                    Blend::Premultiplied => {
+                        gl.enable(glow::BLEND);
+                        gl.blend_equation(glow::FUNC_ADD);
+                        gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+                    }
+                }
+                gl.use_program(Some(draw.program.0.name));
+                for (unit, texture) in draw.textures.iter().enumerate() {
+                    gl.active_texture(glow::TEXTURE0 + unit as u32);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
+                    if texture.0.filter.get() != filter {
+                        let mode = match filter {
+                            TextureFilter::Nearest => glow::NEAREST,
+                            TextureFilter::Linear => glow::LINEAR,
+                        };
+                        // The validated texture belongs to this current context.
+                        // GLES2 stores min/mag filtering on the texture object.
+                        gl.tex_parameter_i32(
+                            glow::TEXTURE_2D,
+                            glow::TEXTURE_MIN_FILTER,
+                            mode as i32,
+                        );
+                        gl.tex_parameter_i32(
+                            glow::TEXTURE_2D,
+                            glow::TEXTURE_MAG_FILTER,
+                            mode as i32,
+                        );
+                        texture.0.filter.set(filter);
+                    }
+                }
+                for uniform in draw.uniforms {
+                    self.uniform(draw.program, *uniform)?;
+                }
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(draw.vertices.name));
+                // This context owns all attribute state. Keep unchanged layouts
+                // enabled instead of invalidating the driver's vertex fetch state.
+                for (index, enabled) in self.0.enabled_attributes.iter().enumerate() {
+                    let wanted = draw
+                        .vertices
+                        .attributes
+                        .iter()
+                        .any(|a| a.location as usize == index);
+                    if enabled.get() != wanted {
+                        if wanted {
+                            gl.enable_vertex_attrib_array(index as u32);
+                        } else {
+                            gl.disable_vertex_attrib_array(index as u32);
+                        }
+                        enabled.set(wanted);
+                    }
+                }
+                for a in &draw.vertices.attributes {
+                    gl.vertex_attrib_pointer_f32(
+                        a.location,
+                        a.components as i32,
+                        glow::FLOAT,
+                        false,
+                        (draw.vertices.stride * 4) as i32,
+                        (a.offset * 4) as i32,
+                    );
+                }
+                let count = (draw.range.end - draw.range.start) as i32;
+                if let Some(indices) = draw.indices {
+                    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(indices.name));
+                    gl.draw_elements(
+                        glow::TRIANGLES,
+                        count,
+                        if indices.width == 2 {
+                            glow::UNSIGNED_SHORT
+                        } else {
+                            glow::UNSIGNED_INT
+                        },
+                        (draw.range.start as usize * indices.width) as i32,
+                    );
+                } else {
+                    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
+                    gl.draw_arrays(glow::TRIANGLES, draw.range.start as i32, count);
+                }
+            }
+            self.check("draw")
+        })();
+        self.native_result(outcome)
     }
     /// RGBA8 readback uses native bottom-up rows. The output is caller-owned.
     pub fn read_rgba(&self, target: &Framebuffer, output: &mut [u8]) -> Result<()> {
@@ -1157,7 +1172,11 @@ impl Context {
         }
         Ok(())
     }
+    fn native_result<T>(&self, result: Result<T>) -> Result<T> {
+        result.map_err(|error| self.terminal_fault().map_or(error, Error::Terminal))
+    }
     fn open(&self) -> Result<()> {
+        self.0.native.failure.check()?;
         if self.0.native.context.is_null() {
             Err(Error::Invalid("graphics context closing"))
         } else {
@@ -1292,7 +1311,7 @@ mod texture_reorder_tests {
                 let length = width as usize * height as usize * bytes;
                 let mut source = vec![0; length];
                 for (index, block) in source.chunks_exact_mut(bytes).enumerate() {
-                    for word in block.chunks_exact_mut(8) {
+                    for word in block.as_chunks_mut::<8>().0 {
                         word.copy_from_slice(&(index as u64).to_le_bytes());
                     }
                 }
@@ -1357,9 +1376,8 @@ struct TextureInner {
 }
 impl Drop for TextureInner {
     fn drop(&mut self) {
-        unsafe {
-            self.owner.gl.delete_texture(self.name);
-        }
+        self.owner
+            .retire(|gl| unsafe { gl.delete_texture(self.name) });
     }
 }
 #[derive(Clone)]
@@ -1387,9 +1405,8 @@ struct FramebufferInner {
 }
 impl Drop for FramebufferInner {
     fn drop(&mut self) {
-        unsafe {
-            self.owner.gl.delete_framebuffer(self.name);
-        }
+        self.owner
+            .retire(|gl| unsafe { gl.delete_framebuffer(self.name) });
     }
 }
 #[derive(Clone)]
@@ -1426,9 +1443,8 @@ struct ProgramInner {
 }
 impl Drop for ProgramInner {
     fn drop(&mut self) {
-        unsafe {
-            self.owner.gl.delete_program(self.name);
-        }
+        self.owner
+            .retire(|gl| unsafe { gl.delete_program(self.name) });
     }
 }
 #[derive(Clone)]
@@ -1497,9 +1513,8 @@ pub struct VertexBuffer {
 }
 impl Drop for VertexBuffer {
     fn drop(&mut self) {
-        unsafe {
-            self.owner.gl.delete_buffer(self.name);
-        }
+        self.owner
+            .retire(|gl| unsafe { gl.delete_buffer(self.name) });
     }
 }
 pub struct IndexBuffer {
@@ -1512,9 +1527,8 @@ pub struct IndexBuffer {
 }
 impl Drop for IndexBuffer {
     fn drop(&mut self) {
-        unsafe {
-            self.owner.gl.delete_buffer(self.name);
-        }
+        self.owner
+            .retire(|gl| unsafe { gl.delete_buffer(self.name) });
     }
 }
 /// Hardware minification and magnification filtering for a sampled draw.

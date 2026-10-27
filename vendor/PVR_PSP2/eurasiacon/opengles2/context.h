@@ -308,11 +308,13 @@ struct GLES2Context_TAG
 
 #define __GLES2_GET_CONTEXT() \
 	GLES2Context *gc = (GLES2Context *)OGLES2_GetTLSValue(); \
-	if(!gc) return;
+	if(!gc) return; \
+    if(KrkrDeviceFaulted(gc->psSysContext)) { SetError(gc, GL_INVALID_OPERATION); return; }
 
 #define __GLES2_GET_CONTEXT_RETURN(RetVal) \
 	GLES2Context *gc = (GLES2Context *)OGLES2_GetTLSValue(); \
-	if(!gc) return RetVal;
+	if(!gc) return RetVal; \
+    if(KrkrDeviceFaulted(gc->psSysContext)) { SetError(gc, GL_INVALID_OPERATION); return RetVal; }
 
 GLES2_MEMERROR SetupBGObject(GLES2Context *gc, IMG_BOOL bIsAccumulate, IMG_UINT32 *pui32PDSState);
 IMG_BOOL PrepareToDraw(GLES2Context *gc, IMG_UINT32 *pui32ClearFlags, IMG_BOOL bTakeLock);
@@ -437,6 +439,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 	SceHeapAllocOptParam opt;
 	SceHeapAllocFailure ignored;
 	if(!failure) failure = &ignored;
+    if(KrkrDeviceFaulted(gc->psSysContext)) return PVRSRV_ERROR_INVALID_CONTEXT;
 	*ppsMemInfo = IMG_NULL;
 	opt.size = sizeof(opt);
 	opt.alignment = ui32Alignment;
@@ -453,7 +456,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 	{
 		failure->stage = "descriptor";
 		failure->error = PVRSRV_ERROR_OUT_OF_MEMORY;
-		sceHeapFreeHeapMemory(heap, mem);
+		if(sceHeapFreeHeapMemory(heap, mem) < 0) return PVRSRV_ERROR_INVALID_CONTEXT;
 		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
@@ -470,7 +473,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 		{
 			failure->stage = "sync-object";
 			failure->error = error;
-			sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem);
+			if(sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem) < 0) return PVRSRV_ERROR_INVALID_CONTEXT;
 			GLES2Free(IMG_NULL, psMemInfo);
 			return error;
 		}
@@ -509,19 +512,31 @@ __inline PVRSRV_ERROR GLES2ALLOCDEVICEMEM_HEAP(GLES2Context *gc, IMG_UINT32 ui32
 	return GLES2AllocDeviceMemHeapWithReport(gc, ui32Attribs, ui32Size, ui32Alignment, ppsMemInfo, IMG_NULL);
 }
 
-__inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_MEM_INFO *psMemInfo)
+__inline PVRSRV_ERROR GLES2FREEDEVICEMEM_HEAP(GLES2Context *gc, PVRSRV_CLIENT_MEM_INFO *memory)
 {
-	if (psMemInfo->psClientSyncInfo)
-	{
-        if(((GLES2HeapMemInfo *)psMemInfo)->texture)
-            SWTextureReleaseSync(gc, psMemInfo->psClientSyncInfo);
-        else PVRSRVFreeSyncInfo(gc->ps3DDevData, psMemInfo->psClientSyncInfo);
-	}
-
-	sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, psMemInfo->pvLinAddr);
-	GLES2Free(IMG_NULL, psMemInfo);
-
-	return PVRSRV_OK;
+    PVRSRV_ERROR error;
+    IMG_INT32 result;
+    if(KrkrDeviceFaulted(gc->psSysContext)) return PVRSRV_ERROR_INVALID_CONTEXT;
+    if(memory->psClientSyncInfo)
+    {
+        if(((GLES2HeapMemInfo *)memory)->texture)
+        {
+            SWTextureReleaseSync(gc, memory->psClientSyncInfo);
+            if(KrkrDeviceFaulted(gc->psSysContext)) return PVRSRV_ERROR_INVALID_CONTEXT;
+        }
+        else
+        {
+            error = PVRSRVFreeSyncInfo(gc->ps3DDevData, memory->psClientSyncInfo);
+            if(error != PVRSRV_OK)
+            { KrkrDeviceFault(gc->psSysContext, "heap-sync", error); return error; }
+        }
+        memory->psClientSyncInfo = IMG_NULL;
+    }
+    result = sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)memory)->heap, memory->pvLinAddr);
+    if(result < 0)
+    { KrkrDeviceFault(gc->psSysContext, "heap-memory", result); return PVRSRV_ERROR_INVALID_CONTEXT; }
+    GLES2Free(IMG_NULL, memory);
+    return PVRSRV_OK;
 }
 
 

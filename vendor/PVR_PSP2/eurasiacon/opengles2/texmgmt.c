@@ -261,6 +261,7 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 	GLES2Context	 *gc = (GLES2Context *)pvContext;
 	IMG_UINT32       ui32Lod, ui32Face;
 	GLES2MipMapLevel *psLevel;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
     if(psTex->ui32ValidationPins || SWTextureBusy(gc, psTex)) return;
     /* Eviction can move CDRAM contents to USER. Moving USER to USER cannot
@@ -331,6 +332,7 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
         if(gc->bTextureReclaimLimited)
             gc->ui32TextureReclaimed += psTex->psMemInfo->uAllocSize;
 		GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		psTex->psMemInfo  = IMG_NULL;
 		psTex->bResidence = IMG_FALSE;
 		/* Cached TAG/PDS state may still contain the evicted device address. */
@@ -351,6 +353,7 @@ static IMG_VOID DestroyTextureGhostKRM(IMG_VOID *pvContext, KRMResource *psResou
 	/* Note the tricky pointer arithmetic. It is necessary */
 	GLES2Ghost *psGhost = (GLES2Ghost*)((IMG_UINTPTR_T)psResource -offsetof(GLES2Ghost, sResource));
 	GLES2Context *gc = (GLES2Context *)pvContext;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
 	if(psGhost->hImage)
@@ -368,6 +371,7 @@ static IMG_VOID DestroyTextureGhostKRM(IMG_VOID *pvContext, KRMResource *psResou
 #endif /* defined(GLES2_EXTENSION_TEXTURE_STREAM) */
 	{
 		GLES2FREEDEVICEMEM_HEAP(gc, psGhost->psMemInfo);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	}
 	
 	gc->psSharedState->psTextureManager->ui32GhostMem -= psGhost->ui32Size;
@@ -1423,6 +1427,7 @@ IMG_INTERNAL IMG_BOOL UnloadInconsistentTexture(GLES2Context *gc, GLES2Texture *
 				ReadBackTextureData(gc, psTex, j, i, psMipLevel->pui8Buffer);
 
 				FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable *)psMipLevel);
+                if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 			}
 		}
 	}
@@ -2874,6 +2879,7 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	IMG_UINT32       i, ui32MaxLevel;
 	GLES2MipMapLevel *psMipLevel;
 
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
     SWTextureWait(gc, psTex);
 	ui32MaxLevel = GLES2_MAX_TEXTURE_MIPMAP_LEVELS;
 
@@ -2907,6 +2913,7 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 		psMipLevel = &psTex->psMipLevel[i];
 
 		DestroyFBOAttachableRenderSurface(gc, (GLES2FrameBufferAttachable*)psMipLevel);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		if (psMipLevel->pui8Buffer && psMipLevel->pui8Buffer != GLES2_LOADED_LEVEL) 
 		{
@@ -2936,6 +2943,7 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
         ui32TextureMemCurrent -= psTex->psMemInfo->uAllocSize;
 #endif
         GLES2FREEDEVICEMEM_HEAP(gc, psTex->psMemInfo);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
         psTex->psMemInfo = IMG_NULL;
     }
 
@@ -3110,6 +3118,8 @@ IMG_INTERNAL GLES2TextureManager * CreateTextureManager(GLES2Context *gc)
 		ReleaseTextureManager(gc, psTexMgr);
 		return IMG_NULL;
 	}
+    psTexMgr->sKRM.pui32TerminalState = &gc->psSysContext->terminalState;
+
 
 	if(!CreateDummyTextures(gc, psTexMgr))
 	{
@@ -3414,7 +3424,7 @@ IMG_INTERNAL IMG_BOOL FreeTextureState(GLES2Context *gc)
 			if(BindTexture(gc, i, j, 0) != IMG_TRUE)
 			{
 				PVR_DPF((PVR_DBG_ERROR,"FreeTextureState: BindTexture %u,%u failed",i,j));
-				bResult=IMG_FALSE;
+				return KrkrDeviceFault(gc->psSysContext, "texture-unbind", 0);
 			}
 		}
 	}
@@ -3428,6 +3438,7 @@ IMG_INTERNAL IMG_BOOL FreeTextureState(GLES2Context *gc)
 		GLES_ASSERT(psTex->sNamedItem.ui32RefCount == 0);
 
 		FreeTexture(gc, psTex);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 		gc->sTexture.psDefaultTexture[i] = IMG_NULL;
 	}
 

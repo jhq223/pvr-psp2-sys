@@ -193,6 +193,9 @@ typedef struct KRMKickResourceManagerRec
 	/* Handle to object to wait on for event object waiting */
 	IMG_HANDLE			hOSEvent;
 
+    /* Optional owning-device fault word, retained through this manager's lifetime. */
+    const IMG_UINT32 *pui32TerminalState;
+
 	/* Whether the manager has been successfully initialized */
 	IMG_BOOL			bInitialized;
 

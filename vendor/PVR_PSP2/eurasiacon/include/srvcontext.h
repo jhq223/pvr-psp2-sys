@@ -12,6 +12,7 @@
 #include <kernel.h>
 
 #include "services.h"
+#include "memory_diagnostics.h"
 #if defined(SUPPORT_SGX)
 #include "sgxapi.h"
 #endif
@@ -117,8 +118,16 @@ typedef struct SrvSysContext_TAG
 	SceUID						hDriverMemUID;
 	SceUID						h3DParamBufMemUID;
 	IMG_SID						hPerProcRef;
+	IMG_HANDLE hMemoryStatsLock;
+	PvrMemoryCounters memoryCounters;
+    IMG_BOOL clientInfoOwned;
+    IMG_UINT32 terminalState;
+    const IMG_CHAR *terminalOperation;
+    IMG_INT32 terminalCode;
 
 } SrvSysContext;
+
+#include "device_fault.h"
 
 
 #endif /* _SRVCONTEXT_H_ */

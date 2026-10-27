@@ -139,6 +139,7 @@ static IMG_VOID TrimIdleFBOSurfaces(GLES2Context *gc)
             InvalidateCachedFBOSurface(gc, a->psRenderSurface);
             UnlinkFBOSurface(gc, a);
             DestroyFBOAttachableRenderSurface(gc, a);
+            if(KrkrDeviceFaulted(gc->psSysContext)) break;
         }
     }
     PVRSRVUnlockMutex(s->hPrimaryLock);

@@ -390,6 +390,7 @@ IMG_INTERNAL IMG_VOID DestroyNamesArray(GLES2Context *gc, GLES2NamesArray *psNam
 	IMG_UINT32     i;
 	GLES2NamedItem *psNamedItem, *psNext;
 
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2_TIME_START(GLES2_TIMER_NAMES_ARRAY);
 
 	/* If any other thread tries to perform any operation in the array now there is a bug in the caller's code */
@@ -412,6 +413,7 @@ IMG_INTERNAL IMG_VOID DestroyNamesArray(GLES2Context *gc, GLES2NamesArray *psNam
 				/* IMPORTANT: These calls must be done while the array is UNLOCKED.  */
 				/*            The reason is that pfnFree() may try to lock the array */
 				psNamesArray->pfnFree(gc, psNamedItem, IMG_TRUE);
+                if(KrkrDeviceFaulted(gc->psSysContext)) return;
 			}
 
 			psNamedItem = psNext;
@@ -601,6 +603,7 @@ IMG_INTERNAL GLES2NamedItem* NamedItemAddRef(GLES2NamesArray *psNamesArray, IMG_
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID NamedItemDelRef(GLES2Context *gc, GLES2NamesArray *psNamesArray, GLES2NamedItem* psNamedItem)
 {
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2_TIME_START(GLES2_TIMER_NAMES_ARRAY);
 	LOCK_NAMES_ARRAY(psNamesArray);
 
@@ -627,6 +630,7 @@ IMG_INTERNAL IMG_VOID NamedItemDelRef(GLES2Context *gc, GLES2NamesArray *psNames
 	if(psNamedItem)
 	{
 		psNamesArray->pfnFree(gc, psNamedItem, IMG_FALSE);
+                if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	}
 }
 
@@ -648,6 +652,7 @@ IMG_INTERNAL IMG_VOID NamedItemDelRefByName(GLES2Context *gc, GLES2NamesArray *p
 	IMG_UINT32      i;
 	GLES2NamedItem  *psNamedItem, *psNext, *psDeadMan = IMG_NULL;
 
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2_TIME_START(GLES2_TIMER_NAMES_ARRAY);
 	LOCK_NAMES_ARRAY(psNamesArray);
 
@@ -690,6 +695,7 @@ IMG_INTERNAL IMG_VOID NamedItemDelRefByName(GLES2Context *gc, GLES2NamesArray *p
 		else
 		{
 			psNamesArray->pfnFree(gc, psDeadMan, IMG_FALSE);
+                if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 		psDeadMan = psNext;
 	}

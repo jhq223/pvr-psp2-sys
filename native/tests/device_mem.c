@@ -7,8 +7,11 @@ typedef unsigned IMG_UINT32;
 typedef void *IMG_HANDLE;
 typedef struct { int value; } PVRSRV_DEV_DATA;
 typedef struct { int value; } PVRSRV_CLIENT_SYNC_INFO;
-typedef struct { PVRSRV_CLIENT_SYNC_INFO *psClientSyncInfo; } PVRSRV_CLIENT_MEM_INFO;
-typedef struct { void *hPerProcRef; } SrvSysContext;
+typedef struct { PVRSRV_CLIENT_SYNC_INFO *psClientSyncInfo; unsigned uAllocSize; } PVRSRV_CLIENT_MEM_INFO;
+typedef struct { void *hPerProcRef; unsigned direct_bytes; int terminal; } SrvSysContext;
+static int KrkrDeviceFaulted(const SrvSysContext *c) { return c->terminal; }
+static int KrkrDeviceFault(SrvSysContext *c, const char *op, int code) { (void)op; c->terminal = code; return 0; }
+#define PVRSRV_ERROR_INVALID_CONTEXT (-99)
 #define IMG_EXPORT
 #define PVR_UNREFERENCED_PARAMETER(x) ((void)(x))
 #define IMG_CALLCONV
@@ -32,6 +35,7 @@ static int PVRSRVAllocDeviceMem(PVRSRV_DEV_DATA *dev, void *heap, unsigned flags
     if (fail_memory) return -10;
     *out = malloc(sizeof(**out));
     assert(*out);
+    (*out)->uAllocSize = bytes + 64;
     memory_count++;
     return 0;
 }
@@ -65,7 +69,10 @@ static int PVRSRVFreeSyncInfo(PVRSRV_DEV_DATA *dev, PVRSRV_CLIENT_SYNC_INFO *inf
     return 0;
 }
 
-#include "../../vendor/PVR_PSP2/eurasiacon/imgegl/imgegl/device_mem_free.h"
+static void KrkrDirectDeviceAllocated(SrvSysContext *context, unsigned bytes) { context->direct_bytes += bytes; }
+static void KrkrDirectDeviceFreed(SrvSysContext *context, unsigned bytes) { assert(context->direct_bytes >= bytes); context->direct_bytes -= bytes; }
+
+#include "../../vendor/PVR_PSP2/eurasiacon/common/owned_device_memory.h"
 
 /* Extracted unchanged from the driver's srv.c by the Rust host checker. */
 #include "device_mem_functions.inc"
@@ -91,14 +98,14 @@ int main(void)
         assert(!KEGLAllocDeviceMemPsp2(&context, &dev, NULL, 0, 1024, 4, &info));
         assert(memory_count == 1 && sync_count == 1);
         fail_free = 1;
-        assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -30);
+        assert(PvrFreeOwnedDeviceMem(&dev, info) == -30);
         assert(memory_count == 1 && !sync_count && !info->psClientSyncInfo);
         fail_free = 0;
         assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
-        assert(!memory_count && !sync_count);
+        assert(!memory_count && !sync_count && !context.direct_bytes);
         assert(!KEGLAllocDeviceMemPsp2(&context, &dev, NULL, PVRSRV_MEM_NO_SYNCOBJ, 1024, 4, &info));
         assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
-        assert(!memory_count && !sync_count);
+        assert(!memory_count && !sync_count && !context.direct_bytes);
     }
     /* Neither a failed sync release nor a subsequent failed allocation
      * release can leave the caller holding a freed descriptor. */
@@ -106,18 +113,18 @@ int main(void)
     unsigned before_memory = memory_free_calls, before_sync = sync_free_calls;
     PVRSRV_CLIENT_SYNC_INFO *original_sync = info->psClientSyncInfo;
     fail_sync_free = 1;
-    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -40);
+    assert(PvrFreeOwnedDeviceMem(&dev, info) == -40);
     assert(memory_free_calls == before_memory && sync_free_calls == before_sync + 1);
     assert(memory_count == 1 && sync_count == 1 && info->psClientSyncInfo == original_sync);
     fail_sync_free = 0;
     fail_free = 1;
-    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -30);
+    assert(PvrFreeOwnedDeviceMem(&dev, info) == -30);
     assert(memory_free_calls == before_memory + 1 && sync_free_calls == before_sync + 2);
     assert(memory_count == 1 && !sync_count && !info->psClientSyncInfo);
     fail_free = 0;
     assert(!KEGLFreeDeviceMemPsp2(&context, &dev, info));
     assert(memory_free_calls == before_memory + 2 && sync_free_calls == before_sync + 2);
-    assert(!memory_count && !sync_count);
+    assert(!memory_count && !sync_count && !context.direct_bytes);
     /* Even with sync quota exhausted, both command stores remain allocatable;
      * a required surface sync must still fail and roll back its allocation. */
     fail_sync = 1;
@@ -131,6 +138,22 @@ int main(void)
         assert(KEGLAllocDeviceMemPsp2(&context,&dev,NULL,PVRSRV_MEM_READ,4,4,&info) == -20);
         assert(!info && !memory_count && !sync_count);
     }
+    /* A real wrapper retirement failure is permanent. Later drops and new
+     * allocations must not call either native release operation again. */
+    fail_sync = 0;
+    assert(!KEGLAllocDeviceMemPsp2(&context, &dev, NULL, 0, 4, 4, &info));
+    fail_sync_free = 1;
+    before_memory = memory_free_calls; before_sync = sync_free_calls;
+    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == -40);
+    assert(context.terminal == -40 && context.direct_bytes == 68);
+    fail_sync_free = 0;
+    assert(KEGLFreeDeviceMemPsp2(&context, &dev, info) == PVRSRV_ERROR_INVALID_CONTEXT);
+    PVRSRV_CLIENT_MEM_INFO *unused = NULL;
+    assert(KEGLAllocDeviceMemPsp2(&context, &dev, NULL, 0, 4, 4, &unused) == PVRSRV_ERROR_INVALID_CONTEXT);
+    assert(memory_free_calls == before_memory && sync_free_calls == before_sync + 1);
+    assert(memory_count == 1 && sync_count == 1 && !unused);
+    /* The test releases retained mocks directly only after all terminal checks. */
+    assert(!PvrFreeOwnedDeviceMem(&dev, info));
     puts("device memory: allocation rollback and descriptor lifetime passed");
     return 0;
 }

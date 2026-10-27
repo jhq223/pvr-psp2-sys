@@ -117,7 +117,9 @@ struct UCH_UseCodeHeapTAG
 UCH_UseCodeHeap * UCH_CodeHeapCreate(PVRSRV_DEV_DATA* ps3DDevData, UCH_CodeHeapType eType, IMG_HANDLE hHeapAllocator, 
 									 PVRSRV_MUTEX_HANDLE hSharedLock, IMG_SID hPerProcRef);
 
-IMG_VOID UCH_CodeHeapDestroy(UCH_UseCodeHeap *psHeap);
+/* Retire each owned segment before releasing heap metadata. A failed phase
+ * returns its original error and preserves the remaining heap owner. */
+PVRSRV_ERROR UCH_CodeHeapDestroy(UCH_UseCodeHeap *psHeap);
 IMG_VOID UCH_CodeHeapFreeFunc(UCH_UseCodeBlock *psBlockToFree);
 UCH_UseCodeBlock *UCH_CodeHeapAllocateFunc(UCH_UseCodeHeap *psHeap, IMG_UINT32 ui32Size, IMG_SID hPerProcRef);
 

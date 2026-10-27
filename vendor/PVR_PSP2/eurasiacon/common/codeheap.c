@@ -33,6 +33,7 @@
 #include "codeheap.h"
 #include "pvr_debug.h"
 #include "sgxdefs.h"
+#include "owned_device_memory.h"
 
 #define LOCK_CODEHEAP(psCodeHeap)    if (psCodeHeap->hSharedLock) { PVRSRVLockMutex(psCodeHeap->hSharedLock); }
 #define UNLOCK_CODEHEAP(psCodeHeap)  if (psCodeHeap->hSharedLock) { PVRSRVUnlockMutex(psCodeHeap->hSharedLock); }
@@ -130,15 +131,16 @@ FreeHeapStopTimeAndReturn:
 
  RETURNS	: Nothing.
 *****************************************************************************/
-IMG_INTERNAL IMG_VOID UCH_CodeHeapDestroy(UCH_UseCodeHeap * psHeap)
+IMG_INTERNAL PVRSRV_ERROR UCH_CodeHeapDestroy(UCH_UseCodeHeap * psHeap)
 {
 	PVRSRV_CLIENT_MEM_INFO    *psSegment, *psSegmentNext;
 	UCH_UseCodeBlock         *psBlock, *psBlockNext;
+    PVRSRV_ERROR error;
 
 	/* Silently ignore NULL */
 	if(!psHeap)
 	{
-		return;
+		return PVRSRV_OK;
 	}
 
 	/* It is up to caller to ensure threads are not still accessing heaps when destroy comes */
@@ -166,12 +168,14 @@ IMG_INTERNAL IMG_VOID UCH_CodeHeapDestroy(UCH_UseCodeHeap * psHeap)
 	}
 
 	/* Free all the memory allocated for code. */
-	for (psSegment = psHeap->psCodeMemory; psSegment != IMG_NULL; psSegment = psSegmentNext)
-	{
-		psSegmentNext = psSegment->psNext;
-		PVRSRVFreeSyncInfo(psHeap->ps3DDevData, psSegment->psClientSyncInfo);
-		PVRSRVFreeDeviceMem(psHeap->ps3DDevData, psSegment);
-	}
+    while(psHeap->psCodeMemory)
+    {
+        psSegment = psHeap->psCodeMemory;
+        psSegmentNext = psSegment->psNext;
+        error = PvrFreeOwnedDeviceMem(psHeap->ps3DDevData, psSegment);
+        if(error != PVRSRV_OK) return error;
+        psHeap->psCodeMemory = psSegmentNext;
+    }
 
 	/* Free all the host memory used in the code heap. */
 	for (psBlock = psHeap->psFreeBlockList; psBlock != IMG_NULL; psBlock = psBlockNext)
@@ -183,6 +187,7 @@ IMG_INTERNAL IMG_VOID UCH_CodeHeapDestroy(UCH_UseCodeHeap * psHeap)
 	PVRSRVMemSet(psHeap, 0, sizeof(UCH_UseCodeHeap));
 
 	PVRSRVFreeUserModeMem(psHeap);
+    return PVRSRV_OK;
 }
 
 #ifdef DEBUG
