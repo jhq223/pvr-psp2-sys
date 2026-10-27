@@ -4,7 +4,7 @@ use std::{
     prelude::v1::*,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering},
+        atomic::{AtomicI32, AtomicU8, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -26,28 +26,6 @@ struct Resources {
     buffers: Option<Box<[Block; 2]>>,
 }
 impl Resources {
-    fn verify(&self) -> Result<(), Error> {
-        for (kind, expected) in [
-            (sdk::SCE_AUDIO_OUT_CONFIG_TYPE_FREQ, SAMPLE_RATE as i32),
-            (sdk::SCE_AUDIO_OUT_CONFIG_TYPE_LEN, BLOCK_FRAMES as i32),
-            (
-                sdk::SCE_AUDIO_OUT_CONFIG_TYPE_MODE,
-                sdk::SCE_AUDIO_OUT_MODE_STEREO as i32,
-            ),
-        ] {
-            // SAFETY: the worker exclusively owns this live native port.
-            let actual = Error::check("sceAudioOutGetConfig", unsafe {
-                sdk::sceAudioOutGetConfig(self.port, kind)
-            })?;
-            if actual != expected {
-                return Err(Error {
-                    operation: "AudioOut configuration changed",
-                    code: -1,
-                });
-            }
-        }
-        Ok(())
-    }
     fn close(&mut self) -> Result<(), Error> {
         if self.port < 0 {
             return Ok(());
@@ -75,10 +53,11 @@ impl Resources {
 }
 impl Drop for Resources {
     fn drop(&mut self) {
-        if self.close().is_err() && self.port >= 0 {
-            if let Some(buffers) = self.buffers.take() {
-                std::mem::forget(buffers);
-            }
+        if self.close().is_err()
+            && self.port >= 0
+            && let Some(buffers) = self.buffers.take()
+        {
+            std::mem::forget(buffers);
         }
     }
 }
@@ -86,7 +65,6 @@ struct Control {
     desired: AtomicU8,
     acknowledged: AtomicU8,
     error: AtomicI32,
-    reconfigured: AtomicBool,
     wake: Arc<Wake>,
     ack: Arc<Wake>,
 }
@@ -108,7 +86,6 @@ impl Stream {
             desired: AtomicU8::new(PAUSED),
             acknowledged: AtomicU8::new(PAUSED),
             error: AtomicI32::new(0),
-            reconfigured: AtomicBool::new(false),
             wake: Wake::new()?,
             ack: Wake::new()?,
         });
@@ -199,20 +176,7 @@ impl Stream {
                         }
                         continue;
                     }
-                    if !active {
-                        if let Err(error) = resources.verify() {
-                            state.reconfigured.store(
-                                error.operation == "AudioOut configuration changed",
-                                Ordering::Release,
-                            );
-                            state.error.store(error.code, Ordering::Release);
-                            fault(error);
-                            state.acknowledged.store(FAILED, Ordering::Release);
-                            let _ = state.ack.signal();
-                            break;
-                        }
-                        active = true;
-                    }
+                    active = true;
                     if state.acknowledged.swap(RUNNING, Ordering::AcqRel) != RUNNING {
                         let _ = state.ack.signal();
                     }
@@ -272,11 +236,7 @@ impl Stream {
         }
         if self.control.error.load(Ordering::Acquire) != 0 {
             return Err(Error {
-                operation: if self.control.reconfigured.load(Ordering::Acquire) {
-                    "AudioOut configuration changed"
-                } else {
-                    "AudioOut worker"
-                },
+                operation: "AudioOut worker",
                 code: self.control.error.load(Ordering::Acquire),
             });
         }
@@ -292,11 +252,7 @@ impl Stream {
             let error = self.control.error.load(Ordering::Acquire);
             if error != 0 {
                 return Err(Error {
-                    operation: if self.control.reconfigured.load(Ordering::Acquire) {
-                        "AudioOut configuration changed"
-                    } else {
-                        "AudioOut worker"
-                    },
+                    operation: "AudioOut worker",
                     code: error,
                 });
             }
@@ -304,7 +260,7 @@ impl Stream {
         }
         Ok(())
     }
-    /// Verify the retained native format and start callback processing.
+    /// Start callback processing with the format established when the port opened.
     pub fn play(&self) -> Result<(), Error> {
         self.request(RUNNING)
     }
