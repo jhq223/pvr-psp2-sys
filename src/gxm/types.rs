@@ -101,7 +101,7 @@ pub struct Config {
     pub patcher_vertex_usse_bytes: u32,
     /// Fixed fragment executable pool; default 512 KiB.
     pub patcher_fragment_usse_bytes: u32,
-    /// RT scheduling capacity, also used in exact driver-memory size queries.
+    /// Queued scenes per shared scheduling target: 1..=8, default 4.
     pub scenes_per_frame: u16,
 }
 impl Default for Config {
@@ -149,6 +149,8 @@ pub struct MemoryUsage {
     pub patcher_host_bytes: u64,
     /// Actual uncached kernel block capacity backing all live render targets.
     pub render_target_driver_bytes: u64,
+    /// Live shared firmware targets; scheduling size classes bound this count to 36.
+    pub render_targets: u32,
     /// Scanout payload bytes; a subset of display_reserved_bytes.
     pub display_pixel_bytes: u64,
     /// Actual scanout CDRAM kernel block capacity, separate from pixels.

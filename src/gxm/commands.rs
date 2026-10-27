@@ -107,7 +107,7 @@ impl Context {
             sceGxmBeginScene(
                 self.0.core.native.context,
                 SCE_GXM_SCENE_FRAGMENT_TRANSFER_SYNC,
-                target.0.target,
+                target.0.target.raw,
                 &region,
                 core::ptr::null_mut(),
                 target.0.sync,

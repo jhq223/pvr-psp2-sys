@@ -295,6 +295,7 @@ pub(super) struct Inner {
     pub core: Rc<Core>,
     pub state: RefCell<State>,
     pub screens: RefCell<Vec<Framebuffer>>,
+    pub targets: RefCell<super::render_targets::Pool<super::render_targets::RenderTarget>>,
     pub vsync: Cell<bool>,
     pub clear: RefCell<Option<Clear>>,
     pub display_detached: Cell<bool>,
@@ -348,8 +349,9 @@ impl Context {
         clear_vertex: ShaderCode<'_>,
         clear_fragment: ShaderCode<'_>,
     ) -> Result<Self> {
+        // Sony gxm/defs.h: SCE_GXM_MAX_SCENES_PER_RENDERTARGET (absent from VitaSDK bindings).
         if config.scenes_per_frame == 0
-            || config.scenes_per_frame > 64
+            || config.scenes_per_frame > 8
             || [
                 config.parameter_bytes,
                 config.vdm_ring_bytes,
@@ -402,6 +404,7 @@ impl Context {
                 display_waits: 0,
             }),
             screens: RefCell::new(Vec::new()),
+            targets: RefCell::new(super::render_targets::Pool::default()),
             vsync: Cell::new(vsync),
             clear: RefCell::new(None),
             display_detached: Cell::new(false),
@@ -739,6 +742,7 @@ impl Context {
             patcher_pool_bytes: n.blocks.iter().skip(4).map(|b| b.bytes as u64).sum(),
             patcher_host_bytes: unsafe { sceGxmShaderPatcherGetHostMemAllocated(n.patcher) }.into(),
             render_target_driver_bytes: self.0.core.rt_bytes.get(),
+            render_targets: self.0.targets.borrow().live_count() as u32,
             display_reserved_bytes: self.0.core.display_pixels.usage().reserved_bytes,
             display_pixel_bytes: self
                 .0
@@ -769,6 +773,7 @@ impl Context {
         }
         let internal = 1
             + self.0.screens.borrow().len() * 2
+            + self.0.targets.borrow().live_count()
             + usize::from(self.0.clear.borrow().is_some()) * 2;
         if Rc::strong_count(&self.0.core) != internal {
             return Err((self, Error::Invalid("GXM resources or fences still alive")));

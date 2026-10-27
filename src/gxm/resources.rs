@@ -2,7 +2,8 @@
 use super::types::Result;
 use super::{
     device::{Core, Lease},
-    memory::{Allocation, Block, Kind, sdk},
+    memory::{Allocation, sdk},
+    render_targets::{self, RenderTarget},
     *,
 };
 use std::{cell::Cell, prelude::v1::*, rc::Rc};
@@ -47,10 +48,9 @@ impl Texture {
 pub(super) struct FramebufferInner {
     /// RGBA8 color layout consumed by target planning.
     pub texture: Texture,
-    /// Physical output or the current process scanout buffer.
-    pub target: *mut SceGxmRenderTarget,
+    /// Shared firmware scheduling backing, independent of this color surface.
+    pub target: Rc<RenderTarget>,
     pub surface: SceGxmColorSurface,
-    pub driver: Rc<Block>,
     pub sync: *mut SceGxmSyncObject,
     pub owner: Rc<Core>,
 }
@@ -59,29 +59,10 @@ impl Drop for FramebufferInner {
         if self.owner.fault.get().is_some() {
             return;
         }
-        if self
-            .owner
-            .fault
-            .command("sceGxmDestroyRenderTarget", unsafe {
-                sceGxmDestroyRenderTarget(self.target)
-            })
-            .is_err()
-        {
-            return;
-        }
-        if self
-            .owner
-            .fault
-            .command("sceGxmSyncObjectDestroy", unsafe {
-                sceGxmSyncObjectDestroy(self.sync)
-            })
-            .is_err()
-        {
-            return;
-        }
-        self.owner
-            .rt_bytes
-            .set(self.owner.rt_bytes.get() - self.driver.bytes as u64);
+        // SAFETY: all fragment/display owners have released this surface.
+        let _ = self.owner.fault.command("sceGxmSyncObjectDestroy", unsafe {
+            sceGxmSyncObjectDestroy(self.sync)
+        });
     }
 }
 /// Render-target scheduling backing plus a sampled view of its color allocation.
@@ -155,14 +136,18 @@ impl Context {
     pub fn target_layout(&self, size: [u32; 2]) -> Result<TargetLayout> {
         target_layout(size)
     }
-    /// Query the exact firmware backing using the same scene capacity as allocation.
+    /// Query one shared scheduling class with the configured scene capacity.
+    /// Color storage retains its exact extent; compatible surfaces share driver bytes.
     pub fn target_footprint(&self, size: [u32; 2]) -> Result<TargetFootprint> {
         self.check("target footprint")?;
         let texture = self.target_layout(size)?;
         let mut bytes = 0;
         sdk("sceGxmGetRenderTargetMemSize", unsafe {
             sceGxmGetRenderTargetMemSize(
-                &rt_params(size, self.0.core.config.scenes_per_frame),
+                &rt_params(
+                    render_targets::extent(size)?,
+                    self.0.core.config.scenes_per_frame,
+                ),
                 &mut bytes,
             )
         })?;
@@ -484,7 +469,7 @@ impl Context {
         t.0.raw.set(raw);
         Ok(())
     }
-    /// Create separately accounted firmware RT backing and a stable synchronization object.
+    /// Bind exact color storage and its sync object to shared firmware scheduling backing.
     pub fn framebuffer(&self, t: &Texture) -> Result<Framebuffer> {
         self.same(&t.0.owner)?;
         let format = match t.format() {
@@ -492,17 +477,11 @@ impl Context {
             TextureFormat::Bgra8 => SCE_GXM_COLOR_FORMAT_A8R8G8B8,
             _ => return Err(Error::Unsupported("framebuffer color format")),
         };
-        let mut params = rt_params(t.size(), self.0.core.config.scenes_per_frame);
-        let mut bytes = 0;
-        sdk("sceGxmGetRenderTargetMemSize", unsafe {
-            sceGxmGetRenderTargetMemSize(&params, &mut bytes)
-        })?;
-        let driver = Block::new(bytes as usize, Kind::Driver, &self.0.core.fault)?;
-        params.driverMemBlock = driver.uid;
-        let mut target = core::ptr::null_mut();
-        sdk("sceGxmCreateRenderTarget", unsafe {
-            sceGxmCreateRenderTarget(&params, &mut target)
-        })?;
+        let target = self
+            .0
+            .targets
+            .borrow_mut()
+            .get_or_create(t.size(), |size| RenderTarget::new(&self.0.core, size))?;
         let mut sync = core::ptr::null_mut();
         let mut surface = unsafe { core::mem::zeroed() };
         let outcome = (|| {
@@ -524,13 +503,6 @@ impl Context {
             })
         })();
         if let Err(e) = outcome {
-            self.0
-                .core
-                .fault
-                .command("sceGxmDestroyRenderTarget(create)", unsafe {
-                    sceGxmDestroyRenderTarget(target)
-                })
-                .ok();
             if !sync.is_null() {
                 self.0
                     .core
@@ -542,15 +514,10 @@ impl Context {
             }
             return Err(e);
         }
-        self.0
-            .core
-            .rt_bytes
-            .set(self.0.core.rt_bytes.get() + driver.bytes as u64);
         Ok(Framebuffer(Rc::new(FramebufferInner {
             texture: t.clone(),
             target,
             surface,
-            driver,
             sync,
             owner: self.0.core.clone(),
         })))

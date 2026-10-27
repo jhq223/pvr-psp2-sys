@@ -13,6 +13,8 @@
 mod gxp;
 mod layout;
 #[cfg(any(target_os = "vita", test))]
+mod render_targets;
+#[cfg(any(target_os = "vita", test))]
 mod suballoc;
 mod types;
 pub use layout::{TargetFootprint, TargetLayout, TextureLayout, target_layout, texture_layout};

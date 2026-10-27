@@ -13,7 +13,7 @@ pub struct TargetLayout {
 pub struct TargetFootprint {
     /// RGBA8 color layout consumed by target planning.
     pub texture: TargetLayout,
-    /// Actual uncached kernel block capacity backing all live render targets.
+    /// Uncached kernel capacity for one shared scheduling class at this extent.
     pub render_target_driver_bytes: Option<u64>,
 }
 /// Exact mapped texture payload. BC dimensions are physical power-of-two extents.
