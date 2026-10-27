@@ -571,6 +571,7 @@ void *sceHeapReallocHeapMemoryWithOption(void *heap, void *ptr, unsigned int nby
 	int res;
 	unsigned int uiSize;
 
+	if(PvrHeapFaulted()) return SCE_NULL;
 	if (ptr == SCE_NULL) {
 		return (sceHeapAllocHeapMemoryWithOption(heap, nbytes, optParam));
 	}
@@ -643,6 +644,7 @@ void *sceHeapReallocHeapMemoryWithOption(void *heap, void *ptr, unsigned int nby
 	res = sceHeapFreeHeapMemory(heap, ptr);
 
 	sceKernelUnlockLwMutex(&head->lwmtx, 1);
+	if(res < 0 || PvrHeapFaulted()) return SCE_NULL;
 	return (newptr);
 }
 
@@ -663,6 +665,7 @@ int	_sceHeapQueryBlockInfo(void *heap, void *ptr, unsigned int *puiSize, int *pi
 	int res;
 	int cnt;
 
+	if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {
@@ -779,6 +782,7 @@ int	sceHeapGetTotalFreeSize(void *heap)
 	int		size;
 	int	res;
 
+	if(PvrHeapFaulted()) return SCE_HEAP_ERROR_INVALID_ID;
 	head = (SceHeapWorkInternal *)heap;
 
 	if (head == SCE_NULL) {

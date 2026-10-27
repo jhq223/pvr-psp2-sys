@@ -84,7 +84,7 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 		GLES2_NAMETYPE_BUFOBJ,
 		GLES2_NAMETYPE_RENDERBUFFER
 	};
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	/* Silently ignore NULL */
 	if(!psSharedState)
 	{
@@ -1044,44 +1044,44 @@ FAILED_CBUF_CreateBuffer:
 		if(gc->apsBuffers[i])
 		{
 			CBUF_DestroyBuffer(gc->ps3DDevData, gc->apsBuffers[i]);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+			if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 		}
 	}
 
 FAILED_InitSpecialUSECodeBlocks:
 
 	FreeVertexArrayObjectState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateVertexArrayObjectState:
 
 	FreeFrameBufferState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateFrameBufferState:
 
 	FreeBufObjState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateBufObjState:
 
 	FreeProgramState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateProgramState:
 
 	FreeTextureState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateTextureState:
 
 	HashTableDestroy(gc, &gc->sProgram.sPDSFragmentVariantHashTable);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_CreateHashTable:
 
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sKRMTAStatusUpdate.psMemInfo);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_TASync:
     SWTextureDestroy(gc);
@@ -1090,7 +1090,7 @@ FAILED_TASync:
 	for(i = 0; i < GLES2_MAX_UNSHAREABLE_NAMETYPE; ++i)
 	{
 		if(gc->apsNamesArray[i]) DestroyNamesArray(gc, gc->apsNamesArray[i]);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 		gc->apsNamesArray[i] = IMG_NULL;
 	}
 #endif
@@ -1104,7 +1104,7 @@ FAILED_CreateSharedState:
 #if defined(FIX_HW_BRN_26922)
 
 	FreeBRN26922Mem(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 FAILED_AllocateBRN26922Mem:
 
@@ -1127,7 +1127,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	IMG_BOOL bPass = IMG_TRUE;
 	IMG_BOOL bLastSharedContext;
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 	if(!gc->psSharedState)
 	{
 		/* If there's no shared state then the rest of the context hasn't been initialised */
@@ -1164,7 +1164,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 
 	/* Free vao state */
 	FreeVertexArrayObjectState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	/* Wait all the VAO attached resources */ 
 	KRM_WaitForAllResources(&gc->sVAOKRM, GLES2_DEFAULT_WAIT_RETRIES);
@@ -1176,7 +1176,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 		if(gc->apsNamesArray[i])
 		{
 			DestroyNamesArray(gc, gc->apsNamesArray[i]);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+			if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 		}
 	}	
 #endif /* defined(GLES2_EXTENSION_VERTEX_ARRAY_OBJECT) */
@@ -1184,10 +1184,10 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	/* Destroy the TA kick VAO manager, 
 	   this must be after Destroy unshareable name arrays (vao name array in this case) */
 	KRM_Destroy(gc, &gc->sVAOKRM);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	HashTableDestroy(gc, &gc->sProgram.sPDSFragmentVariantHashTable);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	if(!FreeTextureState(gc))
 	{
@@ -1196,19 +1196,19 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 	}
 
 	FreeProgramState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	FreeBufObjState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	/* FrameBuffers must be freed _after_ freeing textures due to FBOs. See FreeTexture() */
 	FreeFrameBufferState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	SWTextureDestroy(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 	FreeContextSharedState(gc);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	/* TexStreamsState must be freed after freeing all the default and named textures, 
 	   which might refer to stream buffer devices */
@@ -1222,7 +1222,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 #endif
 
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sKRMTAStatusUpdate.psMemInfo);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 #if defined(FIX_HW_BRN_26922)
 	FreeBRN26922Mem(gc);
@@ -1237,7 +1237,7 @@ static IMG_BOOL DeInitContext(GLES2Context *gc)
 		if(gc->apsBuffers[i])
 		{
 			CBUF_DestroyBuffer(gc->ps3DDevData, gc->apsBuffers[i]);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+			if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 		}
 	}
 

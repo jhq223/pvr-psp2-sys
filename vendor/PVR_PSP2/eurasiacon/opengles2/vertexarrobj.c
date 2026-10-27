@@ -76,11 +76,11 @@ IMG_INTERNAL IMG_VOID ReclaimVAOMemKRM(IMG_VOID *pvContext, KRMResource *psResou
 IMG_INTERNAL IMG_VOID DestroyVAOGhostKRM(IMG_VOID *pvContext, KRMResource *psResource)
 {
 	GLES2Context *gc = (GLES2Context *)pvContext;
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	GLES2VertexArrayObject *vao = (GLES2VertexArrayObject *)((IMG_UINT8 *)psResource - offsetof(GLES2VertexArrayObject, sResource));
 	FreeVertexArrayObjectInternalPointers(gc, vao);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2Free(IMG_NULL, vao);
 }	
 
@@ -192,7 +192,7 @@ static IMG_BOOL WaitUntilVAONotUsed(GLES2Context *gc, GLES2VertexArrayObject *ps
 static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2VertexArrayObject *psVAO)
 {
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	IMG_UINT32 i;
 	GLES2BufferObject *psBufObj;
 	GLES2NamesArray *psNamesArray = gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_BUFOBJ];	
@@ -213,7 +213,7 @@ static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2Ver
 			
 			/* Decrease bufobj's RefCount by 1 */
 			NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psBufObj);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+			if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 		psVAO->asVAOState[i].psBufObj = IMG_NULL;
 	}
@@ -227,7 +227,7 @@ static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2Ver
 
 		/* Decrease bufobj's RefCount by 1 */
 		NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psBufObj);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	}
 	psVAO->psBoundElementBuffer = IMG_NULL;
 		
@@ -252,7 +252,7 @@ static IMG_VOID FreeVertexArrayObjectInternalPointers(GLES2Context *gc, GLES2Ver
     if (psVAO->psMemInfo)
 	{
 		GLES2FREEDEVICEMEM(gc->ps3DDevData, psVAO->psMemInfo);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		psVAO->psMemInfo = IMG_NULL;
 	}
@@ -280,7 +280,7 @@ IMG_INTERNAL IMG_VOID FreeVertexArrayObjectState(GLES2Context *gc)
 	/* Free VAO's all the internal pointer data and
 	   decrease the attached buffer objects' RefCount since they're unbound from the VAO. */
 	FreeVertexArrayObjectInternalPointers(gc, psVAO);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	/* Remove VAO's KRM resource */
 	KRM_RemoveResourceFromAllLists(&gc->sVAOKRM, &psVAO->sResource);
@@ -295,12 +295,12 @@ IMG_INTERNAL IMG_VOID FreeVertexArrayObjectState(GLES2Context *gc)
 
 		/* Unbind the current named VAO from the context by decreasing its RefCount by 1 */
 		NamedItemDelRef(gc, psNamesArray, (GLES2NamedItem*)psVAO);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		/* Free the default VAO's all the internal pointer data and 
 		   decrease the attached buffer objects' RefCount since they're unbound from the default VAO. */
 		FreeVertexArrayObjectInternalPointers(gc, psDefaultVAO);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		
 		/* Remove the default VAO's KRM resource */
 		KRM_RemoveResourceFromAllLists(&gc->sVAOKRM, &psDefaultVAO->sResource);		
@@ -326,7 +326,7 @@ IMG_INTERNAL IMG_VOID FreeVertexArrayObjectState(GLES2Context *gc)
 static IMG_VOID FreeVertexArrayObject(GLES2Context *gc, GLES2VertexArrayObject *psVAO, IMG_BOOL bIsShutdown)
 {
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	/* Avoid build warning in release mode */
 	PVR_UNREFERENCED_PARAMETER(bIsShutdown);
 	GLES_ASSERT(bIsShutdown || (psVAO->sNamedItem.ui32RefCount == 0));

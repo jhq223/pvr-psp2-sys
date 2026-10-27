@@ -16,7 +16,8 @@ typedef void PVRSRV_DEV_DATA;
 #include "../../vendor/PVR_PSP2/eurasiacon/opengles2/psp2/heap_retirement.h"
 static unsigned terminal_word;
 static int terminal_code;
-static unsigned unmap_calls,free_calls;
+static unsigned unmap_calls,free_calls,lock_calls;
+static int recursive_mock;
 static void heap_fault(void *owner,const char *op,int error) { (void)owner;(void)op;terminal_word=1;terminal_code=error; }
 
 typedef void *SceClibMspace;
@@ -47,11 +48,12 @@ static void *block;
 static size_t block_size;
 static SceHeapWorkInternal head;
 static int sceKernelLockLwMutex(SceKernelLwMutexWork *lock, int count, void *timeout) {
+    ++lock_calls;
     if(failure == FAIL_LOCK) return -101;
-    assert(!lock->locked); lock->locked = 1; return 0;
+    assert(recursive_mock || !lock->locked); ++lock->locked; return 0;
 }
 static int sceKernelUnlockLwMutex(SceKernelLwMutexWork *lock, int count) {
-    assert(lock->locked); lock->locked = 0; return 0;
+    assert(lock->locked); --lock->locked; return 0;
 }
 static int sceKernelAllocMemBlock(const char *name, int type, unsigned bytes, void *opt) {
     if(failure == FAIL_KERNEL) return -102;
@@ -100,7 +102,7 @@ static void *sceClibMspaceMalloc(void *msp, size_t bytes) {
 #include "heap_allocation_functions.inc"
 static void reset(int mode, unsigned type) {
     assert(!blocks && !mappings && !mspaces);
-    terminal_word=0;terminal_code=0;unmap_calls=free_calls=0;PvrHeapBindFault(heap_fault,NULL,&terminal_word);st_liveHeaps=1;
+    terminal_word=0;terminal_code=0;unmap_calls=free_calls=lock_calls=0;recursive_mock=0;PvrHeapBindFault(heap_fault,NULL,&terminal_word);st_liveHeaps=1;
     memset(&head, 0, sizeof(head)); head.magic = (uintptr_t)(&head + 1);
     head.bsize = 4096; head.memblockType = type;
     head.prim.next = head.prim.prev = &head.prim; head.prim.msp = &head;

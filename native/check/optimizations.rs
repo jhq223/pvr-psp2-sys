@@ -241,7 +241,12 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         (
             "heap_release",
             "opengles2/psp2/heap.c",
-            vec!["int\tsceHeapFreeHeapMemory("],
+            vec![
+                "int\tsceHeapFreeHeapMemory(",
+                "int\t_sceHeapQueryBlockInfo(",
+                "void *sceHeapReallocHeapMemoryWithOption(",
+                "int\tsceHeapGetTotalFreeSize(",
+            ],
         ),
         (
             "heap_device_mem",

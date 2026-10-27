@@ -261,7 +261,7 @@ static IMG_VOID ReclaimTextureMemKRM(IMG_VOID *pvContext, KRMResource *psResourc
 	GLES2Context	 *gc = (GLES2Context *)pvContext;
 	IMG_UINT32       ui32Lod, ui32Face;
 	GLES2MipMapLevel *psLevel;
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
     if(psTex->ui32ValidationPins || SWTextureBusy(gc, psTex)) return;
     /* Eviction can move CDRAM contents to USER. Moving USER to USER cannot
@@ -353,7 +353,7 @@ static IMG_VOID DestroyTextureGhostKRM(IMG_VOID *pvContext, KRMResource *psResou
 	/* Note the tricky pointer arithmetic. It is necessary */
 	GLES2Ghost *psGhost = (GLES2Ghost*)((IMG_UINTPTR_T)psResource -offsetof(GLES2Ghost, sResource));
 	GLES2Context *gc = (GLES2Context *)pvContext;
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 #if defined(GLES2_EXTENSION_EGL_IMAGE)
 	if(psGhost->hImage)
@@ -2879,7 +2879,7 @@ static IMG_VOID FreeTexture(GLES2Context *gc, GLES2Texture *psTex)
 	IMG_UINT32       i, ui32MaxLevel;
 	GLES2MipMapLevel *psMipLevel;
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
     SWTextureWait(gc, psTex);
 	ui32MaxLevel = GLES2_MAX_TEXTURE_MIPMAP_LEVELS;
 

@@ -56,7 +56,7 @@ IMG_INTERNAL IMG_BOOL CreateBufObjState(GLES2Context *gc)
 IMG_INTERNAL IMG_VOID FreeBufObjState(GLES2Context *gc)
 {
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	IMG_UINT32 i;
 
 	/* unbind all the buffer objects */
@@ -69,7 +69,7 @@ IMG_INTERNAL IMG_VOID FreeBufObjState(GLES2Context *gc)
 		    if (i == ARRAY_BUFFER_INDEX)
 			{
 				NamedItemDelRef(gc, gc->psSharedState->apsNamesArray[GLES2_NAMETYPE_BUFOBJ], (GLES2NamedItem*)gc->sBufferObject.psActiveBuffer[i]);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+				if(KrkrDeviceFaulted(gc->psSysContext)) return;
 			}
 			gc->sBufferObject.psActiveBuffer[i] = IMG_NULL;
 		}
@@ -280,7 +280,7 @@ static IMG_BOOL WaitUntilBufObjNotUsed(GLES2Context *gc, GLES2BufferObject *psBu
 static IMG_VOID FreeBufferObject(GLES2Context *gc, GLES2BufferObject *psBufObj, IMG_BOOL bIsShutdown)
 {
 
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	PVR_UNREFERENCED_PARAMETER(bIsShutdown);
 	GLES_ASSERT(bIsShutdown || (psBufObj->sNamedItem.ui32RefCount == 0));
 
@@ -307,7 +307,7 @@ static IMG_VOID FreeBufferObject(GLES2Context *gc, GLES2BufferObject *psBufObj, 
 		gc->ui32VBOMemCurrent -= psBufObj->psMemInfo->uAllocSize;
 #endif /* defined(DEBUG) || defined(TIMING) */
 		GLES2FREEDEVICEMEM_HEAP(gc, psBufObj->psMemInfo);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+		if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	}
 
 	KRM_RemoveResourceFromAllLists(&gc->psSharedState->sBufferObjectKRM, &psBufObj->sResource);

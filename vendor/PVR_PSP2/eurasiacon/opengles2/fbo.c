@@ -2892,7 +2892,7 @@ static IMG_VOID RenderbufferStorage(GLenum target, GLsizei samples, GLenum inter
     }
 
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psRenderBuffer);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	ui32BufferSize *= ((IMG_UINT32)width  + EURASIA_TAG_TILE_SIZEX-1) & ~(EURASIA_TAG_TILE_SIZEX-1);
 	ui32BufferSize *= ((IMG_UINT32)height + EURASIA_TAG_TILE_SIZEY-1) & ~(EURASIA_TAG_TILE_SIZEY-1);
@@ -3096,7 +3096,7 @@ IMG_INTERNAL IMG_BOOL SetupRenderbufferFromEGLImage(GLES2Context *gc, GLES2Rende
 
 	/* Notify all the framebuffers attached to this renderbuffers about the change */
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psRenderBuffer);
-    if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
+	if(KrkrDeviceFaulted(gc->psSysContext)) return IMG_FALSE;
 
 	/* Free any memory that we had allocated earlier for this renderbuffer */
 	if(psRenderBuffer->psMemInfo)

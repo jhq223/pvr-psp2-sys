@@ -161,7 +161,12 @@ fn texture_heap_retirement_preserves_blocks_and_stops_all_later_mutations() {
             "heap_allocation_functions.inc",
         ),
         (
-            &["int\tsceHeapFreeHeapMemory("][..],
+            &[
+                "int\tsceHeapFreeHeapMemory(",
+                "int\t_sceHeapQueryBlockInfo(",
+                "void *sceHeapReallocHeapMemoryWithOption(",
+                "int\tsceHeapGetTotalFreeSize(",
+            ][..],
             "heap_release_functions.inc",
         ),
     ] {
