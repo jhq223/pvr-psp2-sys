@@ -380,39 +380,8 @@ impl Context {
         blocks: &[u8],
         staging: &mut [u8],
     ) -> Result<Texture> {
-        self.validate_size(size)?;
-        if !self.0.caps.bc {
-            return Err(Error::Unsupported("native BC compression"));
-        }
-        if !format.is_compressed() || size.iter().any(|&n| n < 8 || !n.is_power_of_two()) {
-            return Err(Error::Invalid("BC requires power-of-two dimensions >=8"));
-        }
-        let block = if format == TextureFormat::Bc1Rgb {
-            8
-        } else {
-            16
-        };
-        let bytes = (size[0] as usize / 4)
-            .checked_mul(size[1] as usize / 4)
-            .and_then(|n| n.checked_mul(block))
-            .ok_or(Error::Invalid("BC extent"))?;
-        if blocks.len() != bytes || staging.len() != bytes {
-            return Err(Error::Invalid("BC payload extent"));
-        }
-        #[cfg(target_os = "vita")]
-        let (compressed_format, payload) = {
-            reorder_blocks(size, block, blocks, staging);
-            (if block == 8 { 0x60000001 } else { 0x60000002 }, &*staging)
-        };
-        #[cfg(not(target_os = "vita"))]
-        let (compressed_format, payload) = (
-            if block == 8 {
-                glow::COMPRESSED_RGB_S3TC_DXT1_EXT as i32
-            } else {
-                glow::COMPRESSED_RGBA_S3TC_DXT5_EXT as i32
-            },
-            blocks,
-        );
+        let (compressed_format, payload) = self.bc_payload(size, format, blocks, staging)?;
+        let bytes = payload.len();
         let name = unsafe {
             self.0
                 .gl
@@ -462,6 +431,36 @@ impl Context {
         }
         self.check("compressed texture upload")?;
         Ok(texture)
+    }
+    /// Replace all BC blocks while preserving the texture's format and extent.
+    /// The caller must release prior CPU users and complete prior GPU readers
+    /// before recycling storage. Vita uses the driver's completed-storage path;
+    /// desktop EGL updates the existing S3TC allocation. Payload and staging
+    /// extents are validated before modifying the texture.
+    pub fn upload_bc_texture(
+        &self,
+        texture: &Texture,
+        blocks: &[u8],
+        staging: &mut [u8],
+    ) -> Result<()> {
+        self.same(&texture.0.owner)?;
+        let size = texture.0.size;
+        let (format, payload) = self.bc_payload(size, texture.0.format, blocks, staging)?;
+        unsafe {
+            let gl = &self.0.gl;
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
+            #[cfg(target_os = "vita")]
+            gl.compressed_tex_image_2d(
+                glow::TEXTURE_2D, 0, format, size[0] as i32, size[1] as i32,
+                0, payload.len() as i32, payload,
+            );
+            #[cfg(not(target_os = "vita"))]
+            gl.compressed_tex_sub_image_2d(
+                glow::TEXTURE_2D, 0, 0, 0, size[0] as i32, size[1] as i32,
+                format as u32, glow::CompressedPixelUnpackData::Slice(payload),
+            );
+        }
+        self.check("compressed texture replacement")
     }
     /// Upload visible rows, respecting producer padding without hidden copies.
     pub fn upload(
@@ -726,13 +725,34 @@ impl Context {
         self.check("vertex upload")?;
         Ok(out)
     }
+    /// Upload 32-bit element indices. Use `index_buffer_u16` when the vertex
+    /// domain fits in 16 bits to reduce index bandwidth and vertex fetch work.
     pub fn index_buffer(&self, indices: &[u32]) -> Result<IndexBuffer> {
-        self.open()?;
-        if std::mem::size_of_val(indices) > i32::MAX as usize {
-            return Err(Error::Invalid("index buffer extent"));
-        }
         if !self.0.caps.indices_u32 {
             return Err(Error::Unsupported("32-bit element indices"));
+        }
+        // SAFETY: u32 has no padding and all bytes of this borrowed slice are initialized.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.index_buffer_bytes(bytes, 4, indices.iter().copied().max().unwrap_or(0))
+    }
+    /// Upload 16-bit element indices, supported by every GLES2 device.
+    pub fn index_buffer_u16(&self, indices: &[u16]) -> Result<IndexBuffer> {
+        // SAFETY: u16 has no padding and the slice remains borrowed through the upload.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.index_buffer_bytes(
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn index_buffer_bytes(&self, bytes: &[u8], width: usize, maximum: u32) -> Result<IndexBuffer> {
+        self.open()?;
+        if bytes.len() > i32::MAX as usize {
+            return Err(Error::Invalid("index buffer extent"));
         }
         let name = unsafe {
             self.0
@@ -743,21 +763,18 @@ impl Context {
         let out = IndexBuffer {
             owner: self.0.clone(),
             name,
-            count: indices.len(),
-            capacity: indices.len(),
-            maximum: indices.iter().copied().max().unwrap_or(0),
+            count: bytes.len() / width,
+            capacity: bytes.len() / width,
+            maximum,
+            width,
         };
         unsafe {
             self.0
                 .gl
                 .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(name));
-            let data = std::slice::from_raw_parts(
-                indices.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(indices),
-            );
             self.0
                 .gl
-                .buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, data, glow::STATIC_DRAW);
+                .buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
         }
         self.check("index upload")?;
         Ok(out)
@@ -783,28 +800,159 @@ impl Context {
         buffer.count = data.len() / buffer.stride as usize;
         Ok(())
     }
-    /// Replace active u32 indices without reallocating their storage. The maximum
-    /// index and active count are updated together after a successful upload.
-    pub fn update_indices(&self, buffer: &mut IndexBuffer, indices: &[u32]) -> Result<()> {
+    /// Update a vertex range without changing the active count or layout.
+    /// `first_vertex` is measured in vertices; data contains complete vertices.
+    /// The caller must wait for earlier submissions using this buffer to finish.
+    pub fn update_vertex_range(
+        &self,
+        buffer: &mut VertexBuffer,
+        first_vertex: usize,
+        data: &[f32],
+    ) -> Result<()> {
         self.open()?;
-        if !Rc::ptr_eq(&self.0, &buffer.owner) || indices.len() > buffer.capacity {
-            return Err(Error::Invalid("index update extent or owner"));
+        let stride = buffer.stride as usize;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || !data.len().is_multiple_of(stride)
+            || first_vertex
+                .checked_add(data.len() / stride)
+                .is_none_or(|end| end > buffer.count)
+        {
+            return Err(Error::Invalid("vertex range extent or owner"));
+        }
+        let offset = first_vertex
+            .checked_mul(stride)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or(Error::Invalid("vertex range offset"))?;
+        unsafe {
+            self.0.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, offset, float_bytes(data));
+        }
+        self.check("vertex range update")
+    }
+    /// Update active u32 indices without changing the active count.
+    /// `first_index` is measured in indices. Draw validation retains the larger
+    /// of the previous and updated maximum; a full update resets that bound.
+    /// Earlier submissions using this buffer must have completed.
+    pub fn update_index_range(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        indices: &[u32],
+    ) -> Result<()> {
+        // SAFETY: initialized u32 storage remains borrowed for the driver copy.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_range_bytes(
+            buffer,
+            first_index,
+            bytes,
+            4,
+            indices.iter().copied().max().unwrap_or(0),
+        )
+    }
+    /// Update active u16 indices with the same range and completion contract as
+    /// `update_index_range`.
+    pub fn update_index_range_u16(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        indices: &[u16],
+    ) -> Result<()> {
+        // SAFETY: initialized u16 storage remains borrowed for the driver copy.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_range_bytes(
+            buffer,
+            first_index,
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn update_index_range_bytes(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        bytes: &[u8],
+        width: usize,
+        maximum: u32,
+    ) -> Result<()> {
+        self.open()?;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || buffer.width != width
+            || first_index
+                .checked_add(bytes.len() / width)
+                .is_none_or(|end| end > buffer.count)
+        {
+            return Err(Error::Invalid("index range extent, width or owner"));
+        }
+        let offset = first_index
+            .checked_mul(width)
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or(Error::Invalid("index range offset"))?;
+        unsafe {
+            self.0
+                .gl
+                .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.name));
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, offset, bytes);
+        }
+        self.check("index range update")?;
+        buffer.maximum = buffer.maximum.max(maximum);
+        Ok(())
+    }
+    /// Replace active u32 indices within completed storage of the same width.
+    pub fn update_indices(&self, buffer: &mut IndexBuffer, indices: &[u32]) -> Result<()> {
+        // SAFETY: initialized u32 storage, borrowed until the driver copy finishes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_bytes(buffer, bytes, 4, indices.iter().copied().max().unwrap_or(0))
+    }
+    /// Replace active u16 indices within completed storage of the same width.
+    pub fn update_indices_u16(&self, buffer: &mut IndexBuffer, indices: &[u16]) -> Result<()> {
+        // SAFETY: initialized u16 storage, borrowed until the driver copy finishes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_bytes(
+            buffer,
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn update_index_bytes(
+        &self,
+        buffer: &mut IndexBuffer,
+        bytes: &[u8],
+        width: usize,
+        maximum: u32,
+    ) -> Result<()> {
+        self.open()?;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || buffer.width != width
+            || bytes.len() / width > buffer.capacity
+        {
+            return Err(Error::Invalid("index update extent, width or owner"));
         }
         unsafe {
             self.0
                 .gl
                 .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.name));
-            let data = std::slice::from_raw_parts(
-                indices.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(indices),
-            );
             self.0
                 .gl
-                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, 0, data);
+                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, 0, bytes);
         }
         self.check("index update")?;
-        buffer.count = indices.len();
-        buffer.maximum = indices.iter().copied().max().unwrap_or(0);
+        buffer.count = bytes.len() / width;
+        buffer.maximum = maximum;
         Ok(())
     }
     pub fn clear(&self, target: Target<'_>, color: [f32; 4]) -> Result<()> {
@@ -937,8 +1085,12 @@ impl Context {
                 gl.draw_elements(
                     glow::TRIANGLES,
                     count,
-                    glow::UNSIGNED_INT,
-                    (draw.range.start * 4) as i32,
+                    if indices.width == 2 {
+                        glow::UNSIGNED_SHORT
+                    } else {
+                        glow::UNSIGNED_INT
+                    },
+                    (draw.range.start as usize * indices.width) as i32,
                 );
             } else {
                 gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
@@ -1019,6 +1171,48 @@ impl Context {
         } else {
             Ok(())
         }
+    }
+    fn bc_payload<'a>(
+        &self,
+        size: [u32; 2],
+        format: TextureFormat,
+        blocks: &'a [u8],
+        staging: &'a mut [u8],
+    ) -> Result<(i32, &'a [u8])> {
+        self.validate_size(size)?;
+        if !self.0.caps.bc {
+            return Err(Error::Unsupported("native BC compression"));
+        }
+        if !format.is_compressed() || size.iter().any(|&n| n < 8 || !n.is_power_of_two()) {
+            return Err(Error::Invalid("BC requires power-of-two dimensions >=8"));
+        }
+        let block = if format == TextureFormat::Bc1Rgb {
+            8
+        } else {
+            16
+        };
+        let bytes = (size[0] as usize / 4)
+            .checked_mul(size[1] as usize / 4)
+            .and_then(|n| n.checked_mul(block))
+            .ok_or(Error::Invalid("BC extent"))?;
+        if blocks.len() != bytes || staging.len() != bytes {
+            return Err(Error::Invalid("BC payload extent"));
+        }
+        #[cfg(target_os = "vita")]
+        let result = {
+            reorder_blocks(size, block, blocks, staging);
+            (if block == 8 { 0x60000001 } else { 0x60000002 }, &*staging)
+        };
+        #[cfg(not(target_os = "vita"))]
+        let result = (
+            if block == 8 {
+                glow::COMPRESSED_RGB_S3TC_DXT1_EXT as i32
+            } else {
+                glow::COMPRESSED_RGBA_S3TC_DXT5_EXT as i32
+            },
+            blocks,
+        );
+        Ok(result)
     }
     fn pixel_format(&self, format: TextureFormat) -> Result<(i32, u32, u32)> {
         let value = match format {
@@ -1309,6 +1503,7 @@ impl Drop for VertexBuffer {
     }
 }
 pub struct IndexBuffer {
+    width: usize,
     owner: Rc<Inner>,
     name: glow::NativeBuffer,
     count: usize,

@@ -269,6 +269,11 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
             vec!["IMG_INTERNAL IMG_BOOL TextureInitializeStorage("],
         ),
         (
+            "texture_bc_reuse",
+            "opengles2/texmgmt.c",
+            vec!["IMG_INTERNAL IMG_BOOL TextureUploadNativeBC("],
+        ),
+        (
             "texture_partial",
             "opengles2/tex.c",
             vec!["static IMG_BOOL UploadIdleTextureRegion("],
@@ -408,6 +413,7 @@ pub fn check(root: &Path, output: &Path, compiler: &OsStr) -> Result<(), String>
         "texture_allocation",
         "texture_storage_bounds",
         "texture_fast",
+        "texture_bc_reuse",
         "texture_lifetime",
         "vao_lifetime",
         "draw_bounds",
