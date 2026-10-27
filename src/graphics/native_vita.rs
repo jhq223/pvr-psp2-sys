@@ -6,6 +6,7 @@ const WIDTH: u32 = 960;
 const HEIGHT: u32 = 544;
 
 pub(super) struct Native {
+    pub(super) failure: fault::State,
     pub(super) display: EGLDisplay,
     active: bool,
     surface: EGLSurface,
@@ -14,6 +15,9 @@ pub(super) struct Native {
 }
 impl Native {
     pub(super) fn close(&mut self) -> Result<()> {
+        if let Some(fault) = self.failure.refresh() {
+            return Err(Error::Terminal(fault));
+        }
         unsafe {
             if !self.context.is_null() {
                 egl_ok(
@@ -42,6 +46,9 @@ impl Native {
                 egl_ok("eglTerminate", eglTerminate(self.display))?;
                 self.display = std::ptr::null_mut();
             }
+            // Successful EGL termination ends the query entry point lifetime.
+            // Detach before any module unload, including partially failed unloads.
+            self.failure.detach();
             while let Some(&module) = self.modules.last() {
                 let mut status = 0;
                 let result = sceKernelStopUnloadModule(
@@ -87,6 +94,7 @@ impl Native {
             return Err(Error::Invalid("a PVR context is already alive"));
         }
         let mut native = Self {
+            failure: Default::default(),
             display: std::ptr::null_mut(),
             active: true,
             surface: std::ptr::null_mut(),
@@ -116,6 +124,8 @@ impl Native {
         if unsafe { PVRSRVCreateVirtualAppHint(&mut hint) } == 0 {
             return Err(Error::Invalid("PVR hints rejected"));
         }
+        let fault_query = native.proc_address("eglQueryDeviceFaultVITA");
+        native.failure.load(fault_query)?;
         unsafe {
             native.display = eglGetDisplay(0);
             if native.display.is_null() {

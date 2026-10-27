@@ -9,8 +9,11 @@ typedef int SceUID;
 typedef int PVRSRV_ERROR;
 #define sceClibPrintf(...) ((void)0)
 typedef int IMG_BOOL;
+typedef int IMG_INT32;
 typedef void *IMG_HANDLE;
 typedef struct { int s3D; } SrvSysContext;
+static int KrkrDeviceFaulted(const SrvSysContext *c) { (void)c; return 0; }
+static int KrkrDeviceFault(SrvSysContext *c, const char *op, int code) { (void)c; (void)op; (void)code; assert(0); return 0; }
 typedef struct { int i32DataMemblockUID; unsigned hMemBlockProcRef, ui32NumPixelsX, ui32NumPixelsY, ui32NumRTData, ui32MaxQueuedRenders; } SGX_ADDRENDTARG;
 #define IMG_NULL NULL
 #define SCE_NULL NULL

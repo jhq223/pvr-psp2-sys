@@ -12,6 +12,7 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
     SceUID uid;
     PVRSRV_ERROR error;
 
+    if(KrkrDeviceFaulted(context)) return IMG_FALSE;
     *target = IMG_NULL;
     info->i32DataMemblockUID = -1;
     info->hMemBlockProcRef = 0;
@@ -33,7 +34,8 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
     if (error != PVRSRV_OK)
     {
         KrkrRenderFailure("rt-register", (unsigned)error, bytes);
-        KrkrFreeRenderTargetBlock(context, uid);
+        { IMG_INT32 retired = KrkrFreeRenderTargetBlock(context, uid);
+          if(retired < 0) return KrkrDeviceFault(context, "rt-rollback-free", retired); }
         return IMG_FALSE;
     }
 
@@ -46,8 +48,10 @@ static IMG_BOOL KrkrAddRenderTarget(SrvSysContext *context,
         sceClibPrintf("[PVR][RTALLOC] stage=add error=0x%X bytes=%u size=%ux%u rtdata=%u queued=%u\n",
             (unsigned)error, bytes, info->ui32NumPixelsX, info->ui32NumPixelsY,
             info->ui32NumRTData, info->ui32MaxQueuedRenders);
-        PVRSRVUnregisterMemBlock(&context->s3D, uid);
-        KrkrFreeRenderTargetBlock(context, uid);
+        error = PVRSRVUnregisterMemBlock(&context->s3D, uid);
+        if(error != PVRSRV_OK) return KrkrDeviceFault(context, "rt-rollback-unregister", error);
+        { IMG_INT32 retired = KrkrFreeRenderTargetBlock(context, uid);
+          if(retired < 0) return KrkrDeviceFault(context, "rt-rollback-free", retired); }
         info->i32DataMemblockUID = -1;
         info->hMemBlockProcRef = 0;
         return IMG_FALSE;

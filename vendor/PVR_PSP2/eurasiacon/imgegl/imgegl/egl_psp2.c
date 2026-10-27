@@ -65,6 +65,7 @@ IMG_INTERNAL IMG_VOID *ENV_CreateGlobalData(IMG_UINT32 ui32Size, IMG_VOID (*pfDe
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID ENV_DestroyGlobalData(IMG_VOID)
 {
+    if(psGlobalData && KrkrDeviceFaulted(&psGlobalData->sSysContext)) return;
 	if (pfGlobalDataDeinitCallback)
 	{
 		pfGlobalDataDeinitCallback((IMG_VOID *)&sGlobalData);

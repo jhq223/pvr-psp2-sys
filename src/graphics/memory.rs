@@ -38,10 +38,10 @@ pub struct HeapMemoryUsage {
 /// added to its reserved bytes. Historical per-domain peaks are also separate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DriverMemoryUsage {
-    /// The texture allocator's current USER_CDRAM reservation and use.
-    pub texture_cdram: HeapMemoryUsage,
-    /// The texture allocator's current USER_NC reservation and use.
-    pub texture_uncached: HeapMemoryUsage,
+    /// Current USER_CDRAM heap usage; `None` means there is no current GC.
+    pub texture_cdram: Option<HeapMemoryUsage>,
+    /// Current USER_NC heap usage; `None` means there is no current GC.
+    pub texture_uncached: Option<HeapMemoryUsage>,
     /// The registered SGXDriver USER_NC kernel block's actual mapped bytes.
     pub driver_user_nc_reserved_bytes: u64,
     /// The registered SGXParamBuffer USER_CDRAM block's actual mapped bytes.
@@ -118,9 +118,12 @@ impl Api {
         let mut texture = RawTextureHeaps::default();
         let mut driver = RawDriver::default();
         let status = unsafe { (self.texture)(&mut texture) };
-        if status != 0 {
-            return Err(Error::Sdk("query texture heaps", status));
-        }
+        // This private return value is distinct from actual SceHeap errors.
+        let heaps = match status {
+            0 => true,
+            -2 => false,
+            code => return Err(Error::Sdk("query texture heaps", code)),
+        };
         let status = unsafe { (self.driver)(&mut driver) };
         if status != 0 {
             return Err(Error::Sdk("query native driver memory", status));
@@ -131,8 +134,8 @@ impl Api {
             blocks: raw.blocks,
         };
         Ok(DriverMemoryUsage {
-            texture_cdram: heap(texture.cdram),
-            texture_uncached: heap(texture.uncached),
+            texture_cdram: heaps.then(|| heap(texture.cdram)),
+            texture_uncached: heaps.then(|| heap(texture.uncached)),
             driver_user_nc_reserved_bytes: driver.registered_unc.into(),
             parameter_cdram_reserved_bytes: driver.parameter_cdram.into(),
             render_target_user_nc_bytes: driver.rt_live.into(),
@@ -196,8 +199,12 @@ impl Context {
     }
     /// Sample native allocator domains when the matching driver exposes them.
     /// Querying never waits for GPU completion or changes allocator ownership.
+    /// Retained driver domains remain queryable after terminal failure; an
+    /// unbound GC reports unavailable texture heaps rather than zero usage.
     pub fn memory_usage(&self) -> Result<Option<DriverMemoryUsage>> {
-        self.open()?;
+        if self.terminal_fault().is_none() {
+            self.open()?;
+        }
         self.0.memory.map(Api::query).transpose()
     }
 }
@@ -205,6 +212,51 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    unsafe extern "C" fn no_gc(_: *mut RawTextureHeaps) -> i32 {
+        -2
+    }
+    unsafe extern "C" fn heap_error(_: *mut RawTextureHeaps) -> i32 {
+        -17
+    }
+    unsafe extern "C" fn healthy(out: *mut RawTextureHeaps) -> i32 {
+        unsafe {
+            (*out).cdram.used = 4;
+        }
+        0
+    }
+    unsafe extern "C" fn driver(out: *mut RawDriver) -> i32 {
+        unsafe {
+            (*out).rt_live = 32;
+        }
+        0
+    }
+    #[test]
+    fn unbound_heap_snapshot_is_distinct_from_real_allocator_error() {
+        let missing = Api {
+            texture: no_gc,
+            driver,
+        }
+        .query()
+        .unwrap();
+        assert_eq!(missing.texture_cdram, None);
+        assert_eq!(missing.texture_uncached, None);
+        assert_eq!(missing.render_target_user_nc_bytes, 32);
+        let present = Api {
+            texture: healthy,
+            driver,
+        }
+        .query()
+        .unwrap();
+        assert_eq!(present.texture_cdram.unwrap().used_bytes, 4);
+        assert!(matches!(
+            Api {
+                texture: heap_error,
+                driver
+            }
+            .query(),
+            Err(Error::Sdk("query texture heaps", -17))
+        ));
+    }
     #[test]
     fn stride_payload_matches_eight_texel_boundaries_without_per_texture_heap_rounding() {
         for (size, bytes) in [

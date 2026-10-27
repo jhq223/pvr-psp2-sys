@@ -9,6 +9,8 @@ pub enum CompletionMode {
 /// Native failures retain their operation and actual device error.
 #[derive(Debug)]
 pub enum Error {
+    /// Unresolved native ownership is retained through process termination.
+    Terminal(std::sync::Arc<super::DeviceFault>),
     Invalid(&'static str),
     Unsupported(&'static str),
     Library {

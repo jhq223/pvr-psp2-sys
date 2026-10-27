@@ -61,3 +61,7 @@ path = "native/tests/sample_state.rs"
 [[test]]
 name = "memory_diagnostics"
 path = "native/tests/memory_diagnostics.rs"
+
+[[test]]
+name = "retirement"
+path = "native/tests/retirement.rs"

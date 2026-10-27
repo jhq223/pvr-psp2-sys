@@ -289,6 +289,8 @@ static EGLBoolean _flushBuffers(KEGL_CONTEXT *ctx, TLS psTls)
 ************************************************************************************/
 static EGLBoolean _deleteSync(KEGL_SYNC *psSync, SrvSysContext *psSysContext)
 {
+    if(KrkrDeviceFaulted(psSysContext)) return EGL_FALSE;
+
 	PVR_ASSERT(psSync);
 	PVR_ASSERT(psSysContext);
 
@@ -350,6 +352,8 @@ static EGLBoolean _deleteSync(KEGL_SYNC *psSync, SrvSysContext *psSysContext)
 ************************************************************************************/
 static void _cleanupSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext)
 {
+    if(KrkrDeviceFaulted(psSysContext)) return ;
+
 	KEGL_SYNC *psSync = psDpy->psHeadSync;
 
 	/* search the syncs associated with a specified display and delete those marked for delete */
@@ -362,6 +366,7 @@ static void _cleanupSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext)
 			if(psSync->bIsDeleting && psSync->refcount==0 && EGL_FENCE_SYNC_COMPLETE(&psSysContext->s3D, psSync))
 			{
 				_deleteSync(psSync, psSysContext);
+                if(KrkrDeviceFaulted(psSysContext)) return;
 			}
 		}
 
@@ -380,12 +385,14 @@ static void _cleanupSyncs(KEGL_DISPLAY * psDpy, SrvSysContext *psSysContext)
 IMG_INTERNAL EGLBoolean TerminateSyncs(KEGL_DISPLAY *psDpy, TLS psTls)
 {
     SrvSysContext *system = &psTls->psGlobalData->sSysContext;
+    if(KrkrDeviceFaulted(system)) return EGL_FALSE;
     psDpy->bSyncsTerminating = IMG_TRUE;
     /* The caller holds the EGL lock and owns the display/services until this
      * finishes. Re-read the list after unlocking: a last waiter may have freed
      * any marked sync during that interval. */
     while(psDpy->psHeadSync)
     {
+        if(KrkrDeviceFaulted(system)) return EGL_FALSE;
         KEGL_SYNC *sync = psDpy->psHeadSync;
         sync->bIsDeleting = EGL_TRUE;
 #if defined(EGL_EXTENSION_KHR_REUSABLE_SYNC)
@@ -448,6 +455,8 @@ IMG_INTERNAL EGLSyncKHR	IMGeglCreateSyncKHR(EGLDisplay eglDpy, EGLenum type, con
 		goto err_out;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_NO_SYNC_KHR; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglCreateSyncKHR);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -653,6 +662,7 @@ err_dealloc_device_mem:
 	}
 
 err_free_sync:
+    if(KrkrDeviceFaulted(psSysContext)) goto err_stop_timer;
 
 	EGLFree(psSync);
 
@@ -692,6 +702,8 @@ IMG_INTERNAL EGLBoolean IMGeglDestroySyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync)
 		goto err_out;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglDestroySyncKHR);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -789,6 +801,8 @@ IMG_INTERNAL EGLint IMGeglClientWaitSyncKHR(EGLDisplay eglDpy, EGLSyncKHR sync, 
 		goto err_out;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglClientWaitSyncKHR);
 
 	psTls->lastError = EGL_SUCCESS;

@@ -28,6 +28,7 @@
 #include "services.h"
 #include "kickresource.h"
 #include "buffers.h"
+#include "device_fault_state.h"
 
 
 /* This must be >= 2 */
@@ -164,6 +165,7 @@ IMG_INTERNAL IMG_BOOL KRM_Initialize(KRMKickResourceManager			*psMgr,
 		}
 	}
 
+	psMgr->pui32TerminalState = IMG_NULL;
 	psMgr->pfnReclaimResourceMem = pfnReclaimResourceMem;
 	psMgr->bRemoveResourceAfterRecoveringMem = bRemoveResourceAfterRecoveringMem;
 	psMgr->pfnDestroyGhost		 = pfnDestroyGhost;
@@ -651,6 +653,7 @@ IMG_INTERNAL IMG_BOOL KRM_IsResourceNeeded(const KRMKickResourceManager *psMgr,	
 	PVR_ASSERT(psMgr->bInitialized);
 	PVR_ASSERT(psResource);
 
+    if(KrkrFaultState(psMgr->pui32TerminalState)) return IMG_TRUE;
 	KRM_ENTER_CRITICAL_SECTION(psMgr);
 
 	bSuccess = IsResourceNeeded(psMgr, psResource);
@@ -860,6 +863,7 @@ static IMG_VOID ReclaimUnneededResourcesInList(KRMKickResourceManager *psMgr,
 	PVR_ASSERT(psMgr);
 	PVR_ASSERT(ppsResourceList);
 
+    if(KrkrFaultState(psMgr->pui32TerminalState)) return;
 	KRM_ENTER_CRITICAL_SECTION(psMgr);
 
 	psDeadList = IMG_NULL;
@@ -893,6 +897,8 @@ static IMG_VOID ReclaimUnneededResourcesInList(KRMKickResourceManager *psMgr,
 				 * If it deadlocks it means someone didn't read the function limitations.
 				 */
 				pfnFreeResource(pvContext, psNextResource);
+                if(KrkrFaultState(psMgr->pui32TerminalState))
+                { KRM_EXIT_CRITICAL_SECTION(psMgr); return; }
 			}
 
 			psNextResource = psHold;
@@ -913,6 +919,7 @@ static IMG_VOID ReclaimUnneededResourcesInList(KRMKickResourceManager *psMgr,
 		PVRSRVMemSet(psDeadList, 0, sizeof(KRMResource));
 
 		pfnFreeResource(pvContext, psDeadList);
+        if(KrkrFaultState(psMgr->pui32TerminalState)) return;
 
 		psDeadList = psHold;
 	}
@@ -1143,6 +1150,7 @@ IMG_INTERNAL IMG_VOID KRM_Destroy(IMG_VOID *pvContext, KRMKickResourceManager *p
 		return;
 	}
 
+    if(KrkrFaultState(psMgr->pui32TerminalState)) return;
 	/* The resource list should be empty at this point */
 	PVR_ASSERT(!psMgr->psResourceList);
 
@@ -1167,6 +1175,7 @@ IMG_INTERNAL IMG_VOID KRM_Destroy(IMG_VOID *pvContext, KRMKickResourceManager *p
 		RemoveResourceFromAllLists(psMgr, psGhostToDestroy);
 
 		psMgr->pfnDestroyGhost(pvContext, psGhostToDestroy);
+        if(KrkrFaultState(psMgr->pui32TerminalState)) return;
 	}
 
 	/* Free the attachment pool */

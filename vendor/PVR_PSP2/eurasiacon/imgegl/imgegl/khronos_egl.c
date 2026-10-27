@@ -610,6 +610,7 @@ static IMG_VOID _TlsDeInit(TLS psTls)
 	EGLGlobal *psEGLGlobalData;
 
 	psEGLGlobalData = psTls->psGlobalData;
+    if(KrkrDeviceFaulted(&psEGLGlobalData->sSysContext)) return;
 
 	psEGLGlobalData->refCount--;
 
@@ -990,17 +991,7 @@ static EGLint _ContextDelete(KEGL_CONTEXT *psCtx, IMG_BOOL bAlreadyLocked)
 		return EGL_NOT_INITIALIZED;
 	}
 
-	if(!bAlreadyLocked)
-	{
-		EGLThreadLock(psTls);
-	}
-
-	_DpyContextUnlink(psCtx->psDpy, psCtx);
-
-	if(!bAlreadyLocked)
-	{
-		EGLThreadUnlock(psTls);
-	}
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext)) return EGL_BAD_ALLOC;
 
 #	if defined(API_MODULES_RUNTIME_CHECKED)
 	{
@@ -1094,18 +1085,16 @@ static EGLint _ContextDelete(KEGL_CONTEXT *psCtx, IMG_BOOL bAlreadyLocked)
 	}
 #	endif /* defined(API_MODULES_RUNTIME_CHECKED) */
 
-	CFGC_Unlink(psCtx->psCfg);
-
-	EGLFree(psCtx);
-
-	/*
-		Can this actually happen? If so we don't really have an appropriate
-		error code to return, EGL_BAD_ALLOC may need to be reconsidered
-	*/
-	if (!imgResult)
-	{
-		return EGL_BAD_ALLOC;
-	}
+    if(!imgResult)
+    {
+        KrkrDeviceFault(&psTls->psGlobalData->sSysContext, "egl-context-retire", 0);
+        return EGL_BAD_ALLOC;
+    }
+    if(!bAlreadyLocked) EGLThreadLock(psTls);
+    _DpyContextUnlink(psCtx->psDpy, psCtx);
+    if(!bAlreadyLocked) EGLThreadUnlock(psTls);
+    CFGC_Unlink(psCtx->psCfg);
+    EGLFree(psCtx);
 
 	return EGL_SUCCESS;
 }
@@ -1119,7 +1108,7 @@ static EGLint _ContextDelete(KEGL_CONTEXT *psCtx, IMG_BOOL bAlreadyLocked)
  *  RETURNS    : None.
  *
  ***********************************************************************/
-static void _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
+static IMG_BOOL _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 {
 	TLS psTls = IMGEGLGetTLSValue();
 
@@ -1127,12 +1116,14 @@ static void _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 	{
 		PVR_DPF((PVR_DBG_ERROR,"_SurfaceDelete: No Current thread"));
 
-		return;
+		return IMG_FALSE;
 	}
 
-	_DpySurfaceUnlink(psSurface->psDpy, psSurface);
-
-	SRV_DestroySurface(psSysContext, psSurface);
+    if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
+    if(!SRV_DestroySurface(psSysContext, psSurface))
+    {
+        return KrkrDeviceFault(psSysContext, "egl-surface-retire", 0);
+    }
 
 	switch (psSurface->type)
 	{
@@ -1153,6 +1144,7 @@ static void _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 			else
 			{
 				GWS_DeletePBufferDrawable(psSurface, psSysContext);
+                if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
 			}
 #else /* defined(API_MODULES_RUNTIME_CHECKED) */
 
@@ -1165,6 +1157,7 @@ static void _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 #	endif /* defined(SUPPORT_OPENVG) */
 			{
 				GWS_DeletePBufferDrawable(psSurface, psSysContext);
+                if(KrkrDeviceFaulted(psSysContext)) return IMG_FALSE;
 			}
 #endif /* defined(API_MODULES_RUNTIME_CHECKED) */
 
@@ -1175,24 +1168,31 @@ static void _SurfaceDelete(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 
 			EGLReleaseThreadLockWSEGL(psSurface->psDpy, psTls);
 
-			psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.window.hDrawable);
-			EGLFree(psSurface->u.window.native);
-
-			EGLReacquireThreadLockWSEGL(psSurface->psDpy, psTls);
+            {
+                WSEGLError retired = psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.window.hDrawable);
+                EGLReacquireThreadLockWSEGL(psSurface->psDpy, psTls);
+                if(retired != WSEGL_SUCCESS) return KrkrDeviceFault(psSysContext, "window-drawable", retired);
+            }
+            EGLFree(psSurface->u.window.native);
 
 			break;
 		}
 		default:
 		{
-			psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.pixmap.hDrawable);
+            {
+                WSEGLError retired = psSurface->psDpy->pWSEGL_FT->pfnWSEGL_DeleteDrawable(psSurface->u.pixmap.hDrawable);
+                if(retired != WSEGL_SUCCESS) return KrkrDeviceFault(psSysContext, "pixmap-drawable", retired);
+            }
 
 			break;
 		}
 	}
 
+	_DpySurfaceUnlink(psSurface->psDpy, psSurface);
 	CFGC_Unlink(psSurface->psCfg);
 
 	EGLFree(psSurface);
+    return IMG_TRUE;
 }
 
 
@@ -1235,6 +1235,7 @@ static EGLBoolean _CompatibleContextAndSurface(KEGL_CONTEXT *psCtx, KEGL_SURFACE
  **********************************************************************/
 static void _SurfaceUnbind(SrvSysContext *psSysContext, KEGL_SURFACE *psSurface)
 {
+    if(KrkrDeviceFaulted(psSysContext)) return;
 	psSurface->refCount--;
 	psSurface->currentCount--;
 
@@ -1544,6 +1545,7 @@ IMG_EXPORT IMG_VOID IMG_CALLCONV KEGLSurfaceUnbind(SrvSysContext *psSysContext, 
 		return;
 	}
 
+    if(KrkrDeviceFaulted(psSysContext)) return;
 	psSurface->refCount--;
 
 	EGLThreadLock(psTls);
@@ -1773,6 +1775,8 @@ IMG_EXPORT EGLBoolean IMGeglInitialize(EGLDisplay eglDpy, EGLint *major, EGLint 
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglInitialize);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -1945,12 +1949,13 @@ Srv_DeInit:
 
 	if(bServicesInit)
 	{
+        if(!SRV_ServicesDeInit(&psTls->psGlobalData->sSysContext))
+        { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 		if(psDpy->hWSDrv)
 		{
 			UnloadModule(psDpy->hWSDrv);
 			psDpy->hWSDrv = IMG_NULL;
 		}
-		SRV_ServicesDeInit(&psTls->psGlobalData->sSysContext);
 	}
 
 	EGLThreadUnlock(psTls);
@@ -1989,6 +1994,8 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglTerminate);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -2068,7 +2075,8 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 				/* if it's used release later otherwise delete */
 				if (psSurface->refCount==0)
 				{
-					_SurfaceDelete(&psTls->psGlobalData->sSysContext, psSurface);
+					if(!_SurfaceDelete(&psTls->psGlobalData->sSysContext, psSurface))
+                    { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 				}
 				else
 				{
@@ -2090,7 +2098,8 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 				/* if it's current release later otherwise delete */
 				if (psContext->isCurrent!=EGL_TRUE)
 				{
-					_ContextDelete(psContext, IMG_TRUE);
+					if(_ContextDelete(psContext, IMG_TRUE) != EGL_SUCCESS)
+                    { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 				}
 				else
 				{
@@ -2144,7 +2153,11 @@ IMG_EXPORT EGLBoolean IMGeglTerminate(EGLDisplay eglDpy)
 
 			if(bDeInitServices)
 			{
-				SRV_ServicesDeInit(&psTls->psGlobalData->sSysContext);
+				if(!SRV_ServicesDeInit(&psTls->psGlobalData->sSysContext))
+                {
+                    KrkrDeviceFault(&psTls->psGlobalData->sSysContext, "egl-services-retire", 0);
+                    psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE;
+                }
 			}
 
 			UnloadModule(psDpy->hWSDrv);
@@ -2417,7 +2430,11 @@ IMG_INTERNAL EGLBoolean IMGeglHibernateProcessIMG(void)
 				psSurface = psSurface->psNextSurfaceAll
 			)
 			{
-				KEGLHibernateRenderSurface(psSysContext, psSurface);
+                if(!KEGLHibernateRenderSurface(psSysContext, psSurface))
+                {
+                    KrkrDeviceFault(psSysContext, "surface-hibernate", 0);
+                    psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE;
+                }
 			}
 			psSysContext->bHibernated = IMG_TRUE;
 		}
@@ -2430,6 +2447,7 @@ IMG_INTERNAL EGLBoolean IMGeglHibernateProcessIMG(void)
 							   CLEANUP_WITH_POLL) != PVRSRV_OK)
 	{
 	    PVR_DPF((PVR_DBG_ERROR,"Couldn't destroy render context"));
+        KrkrDeviceFault(psSysContext, "hibernate-context", 0); return EGL_FALSE;
 	}
 	psSysContext->hRenderContext = (IMG_HANDLE)0;
 
@@ -2495,9 +2513,16 @@ IMG_INTERNAL EGLBoolean IMGeglAwakenProcessIMG(void)
  **********************************************************************/
 static IMG_INT32 IMG_CALLCONV IMGeglQueryDriverMemoryVITA(PvrDriverMemorySnapshot *out)
 {
-    TLS tls = TLS_Open(_TlsInit);
-    if(!tls) return -1;
-    return KrkrQueryDriverMemory(&tls->psGlobalData->sSysContext, out);
+    EGLGlobal *global = ENV_GetGlobalData();
+    if(!global) return -1;
+    return KrkrQueryDriverMemory(&global->sSysContext, out);
+}
+
+static IMG_INT32 IMG_CALLCONV IMGeglQueryDeviceFaultVITA(PvrDeviceFaultSnapshot *out)
+{
+    EGLGlobal *global = ENV_GetGlobalData();
+    if(!global) return 0;
+    return KrkrQueryDeviceFault(&global->sSysContext, out);
 }
 
 IMG_EXPORT void (IMG_CALLCONV * IMGeglGetProcAddress(const char *procname))(void)
@@ -2542,6 +2567,7 @@ IMG_EXPORT void (IMG_CALLCONV * IMGeglGetProcAddress(const char *procname))(void
 		  {"eglAwakenProcessIMG",           (EGL_PROC)IMGeglAwakenProcessIMG},
 #endif
 		  {"eglQueryDriverMemoryVITA", (EGL_PROC)IMGeglQueryDriverMemoryVITA},
+          {"eglQueryDeviceFaultVITA", (EGL_PROC)IMGeglQueryDeviceFaultVITA},
 		  {0,0}
 	  };
 
@@ -3278,6 +3304,8 @@ IMG_EXPORT EGLSurface IMGeglCreateWindowSurface(EGLDisplay eglDpy,
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_NO_SURFACE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglCreateWindowSurface);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -3983,6 +4011,8 @@ IMG_EXPORT EGLSurface IMGeglCreatePbufferSurface(EGLDisplay eglDpy,
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_NO_SURFACE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglCreatePbufferSurface);
 
 #if defined(API_MODULES_RUNTIME_CHECKED)
@@ -4520,6 +4550,8 @@ IMG_EXPORT EGLBoolean IMGeglDestroySurface(EGLDisplay eglDpy, EGLSurface eglSurf
 	{
 		return EGL_FALSE;
 	}
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_CONTEXT; return EGL_FALSE; }
 
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglDestroySurface);
 
@@ -4594,7 +4626,8 @@ IMG_EXPORT EGLBoolean IMGeglDestroySurface(EGLDisplay eglDpy, EGLSurface eglSurf
 	}
 	else
 	{
-		_SurfaceDelete(&psTls->psGlobalData->sSysContext, psSurface);
+		if(!_SurfaceDelete(&psTls->psGlobalData->sSysContext, psSurface))
+        { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 	}
 
 	EGLThreadUnlock(psTls);
@@ -4967,6 +5000,8 @@ IMG_EXPORT EGLContext IMGeglCreateContext(EGLDisplay eglDpy,
 		return EGL_NO_CONTEXT;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_NO_CONTEXT; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglCreateContext);
 
 	psTls->lastError = EGL_SUCCESS;
@@ -5496,6 +5531,8 @@ IMG_EXPORT EGLBoolean IMGeglDestroyContext(EGLDisplay eglDpy, EGLContext eglCont
 	{
 		return EGL_FALSE;
 	}
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_CONTEXT; return EGL_FALSE; }
 
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglDestroyContext);
 
@@ -5692,6 +5729,8 @@ IMG_EXPORT EGLBoolean IMGeglMakeCurrent(EGLDisplay eglDpy,
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglMakeCurrent);
 
 #if defined(EGL_EXTENSION_IMG_EGL_HIBERNATION)
@@ -6251,6 +6290,8 @@ IMG_EXPORT EGLBoolean IMGeglMakeCurrent(EGLDisplay eglDpy,
 		}
 
 		_SurfaceUnbind(&psTls->psGlobalData->sSysContext, psTls->apsCurrentReadSurface[ui32NewContextAPI]);
+        if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+        { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 
 		psTls->apsCurrentReadSurface[ui32NewContextAPI] = EGL_NO_SURFACE;
 	}
@@ -6269,6 +6310,8 @@ IMG_EXPORT EGLBoolean IMGeglMakeCurrent(EGLDisplay eglDpy,
 		}
 
 		_SurfaceUnbind(&psTls->psGlobalData->sSysContext, psTls->apsCurrentDrawSurface[ui32NewContextAPI]);
+        if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+        { psTls->lastError = EGL_BAD_ALLOC; EGLThreadUnlock(psTls); return EGL_FALSE; }
 
 		psTls->apsCurrentDrawSurface[ui32NewContextAPI] = EGL_NO_SURFACE;
 	}
@@ -7122,6 +7165,8 @@ IMG_EXPORT EGLBoolean IMGeglSwapBuffers(EGLDisplay eglDpy, EGLSurface draw)
 	{
 		return EGL_FALSE;
 	}
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_CONTEXT; return EGL_FALSE; }
 
 	IMGEGL_INC_COUNT(IMGEGL_COUNTER_SWAP_BUFFERS_COUNT, 1);
 
@@ -9443,6 +9488,8 @@ IMG_EXPORT EGLBoolean IMGeglReleaseThread(void)
 		return EGL_FALSE;
 	}
 
+    if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext))
+    { psTls->lastError = EGL_BAD_ALLOC; return EGL_FALSE; }
 	IMGEGL_TIME_START(IMGEGL_TIMER_IMGeglReleaseThread);
 
 #if defined(EGL_EXTENSION_IMG_EGL_HIBERNATION)
@@ -9530,7 +9577,8 @@ IMG_EXPORT EGLBoolean IMGeglReleaseThread(void)
 
 	IMGEGL_TIME_STOP(IMGEGL_TIMER_IMGeglReleaseThread);
 
-	TLS_Close(_TlsDeInit);
+	if(KrkrDeviceFaulted(&psTls->psGlobalData->sSysContext)) return EGL_FALSE;
+    TLS_Close(_TlsDeInit);
 
 	return EGL_TRUE;
 }

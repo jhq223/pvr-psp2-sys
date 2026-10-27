@@ -3,6 +3,7 @@ use super::*;
 use khronos_egl as egl;
 
 pub(super) struct Native {
+    pub(super) failure: fault::State,
     pub(super) display: EGLDisplay,
     active: bool,
     initialized: bool,
@@ -37,6 +38,7 @@ impl Native {
             return Err(Error::Invalid("a graphics context is already alive"));
         }
         let mut native = Self {
+            failure: Default::default(),
             display: std::ptr::null_mut(),
             active: true,
             initialized: false,
@@ -174,6 +176,9 @@ impl Native {
             .map_err(error("eglSwapBuffers"))
     }
     pub(super) fn close(&mut self) -> Result<()> {
+        if let Some(fault) = self.failure.refresh() {
+            return Err(Error::Terminal(fault));
+        }
         if !self.context.is_null() {
             self.api()
                 .make_current(self.display(), None, None, None)

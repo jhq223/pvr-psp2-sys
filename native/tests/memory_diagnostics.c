@@ -17,7 +17,7 @@ typedef int SceUID;
 #define SCE_NULL NULL
 #define SCE_KERNEL_MEMBLOCK_TYPE_USER_NC_RW 1
 #include "../../vendor/PVR_PSP2/eurasiacon/include/memory_diagnostics.h"
-typedef struct { void *hMemoryStatsLock; PvrMemoryCounters memoryCounters; int hDriverMemUID, h3DParamBufMemUID; } SrvSysContext;
+typedef struct { void *hMemoryStatsLock; PvrMemoryCounters memoryCounters; int hDriverMemUID, h3DParamBufMemUID; unsigned terminalState; const char *terminalOperation; int terminalCode; } SrvSysContext;
 typedef struct { unsigned size; void *mappedBase; unsigned mappedSize; } SceKernelMemBlockInfo;
 static unsigned sizes[32];
 static int fail_alloc, fail_free, fail_query, locks;
@@ -53,6 +53,7 @@ static int sceKernelFreeMemBlock(int uid)
 }
 static void PVRSRVLockMutex(void *lock) { (void)lock; assert(locks++ == 0); }
 static void PVRSRVUnlockMutex(void *lock) { (void)lock; assert(--locks == 0); }
+#include "../../vendor/PVR_PSP2/eurasiacon/include/device_fault.h"
 #include "memory_diagnostics_functions.inc"
 
 typedef float IMG_FLOAT;
@@ -120,6 +121,15 @@ int main(void)
     assert(context.hMemoryStatsLock && mutexes == 1);
     deinit_failure = 0;
     assert(SRV_ServicesDeInit(&context) && !context.hMemoryStatsLock && mutexes == 0);
+    /* Failed initialization may have latched an ownership error. Keep the
+     * services lock for first-error and physical-memory diagnostics forever. */
+    context.terminalState = 0;
+    assert(SRV_ServicesInit(&context, NULL, 0));
+    KrkrDeviceFault(&context, "services-retire", -7);
+    assert(!SRV_ServicesDeInit(&context) && context.hMemoryStatsLock && mutexes == 1);
+    assert(!SRV_ServicesInit(&context, NULL, 0) && mutexes == 1);
+    PvrDeviceFaultSnapshot first;
+    assert(KrkrQueryDeviceFault(&context, &first) == 1 && first.code == -7);
     puts("native memory counters preserve mapped sizes, failed-free ownership and separate domains");
     return 0;
 }

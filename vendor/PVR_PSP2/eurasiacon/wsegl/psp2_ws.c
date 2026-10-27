@@ -290,36 +290,33 @@ static WSEGLError WSEGL_CreatePixmapDrawable(WSEGLDisplayHandle hDisplay,
 
 static WSEGLError WSEGL_DeleteDrawable(WSEGLDrawableHandle hDrawable)
 {
-	Psp2DrawableType eType = *(Psp2DrawableType *)hDrawable;
-	NativeWindowType window;
-	NativePixmapType pixmap;
-
-	switch (eType)
-	{
-	case PSP2_DRAWABLE_TYPE_WINDOW:
-		window = (NativeWindowType)hDrawable;
-        PVRSRVSwapToDCSystem((IMG_HANDLE)window->psConnection, window->swapChain);
-
-		for (IMG_INT32 i = 0; i < window->numFlipBuffers; i++)
-		{
-			PVRSRVUnmapDeviceClassMemory(window->psDevData, window->apsSwapBufferMemInfo[i]);
-		}
-
-		PVRSRVDestroyDCSwapChain((IMG_HANDLE)window->psConnection, window->swapChain);
-		break;
-
-	case PSP2_DRAWABLE_TYPE_PIXMAP:
-		pixmap = (NativePixmapType)hDrawable;
-		PVRSRVUnmapMemoryFromGpu(pixmap->psDevData, pixmap->memBase, 0, IMG_FALSE);
-		sceKernelFreeMemBlock(pixmap->memUID);
-		break;
-
-	default:
-		return WSEGL_BAD_DRAWABLE;
-	}
-
-	return WSEGL_SUCCESS;
+    Psp2DrawableType type = *(Psp2DrawableType *)hDrawable;
+    NativeWindowType window;
+    NativePixmapType pixmap;
+    switch(type)
+    {
+    case PSP2_DRAWABLE_TYPE_WINDOW:
+        window = (NativeWindowType)hDrawable;
+        if(PVRSRVSwapToDCSystem((IMG_HANDLE)window->psConnection, window->swapChain) != PVRSRV_OK)
+            return WSEGL_BAD_DRAWABLE;
+        for(IMG_INT32 i = 0; i < window->numFlipBuffers; ++i)
+            if(PVRSRVUnmapDeviceClassMemory(window->psDevData, window->apsSwapBufferMemInfo[i]) != PVRSRV_OK)
+                return WSEGL_BAD_DRAWABLE;
+        if(PVRSRVDestroyDCSwapChain((IMG_HANDLE)window->psConnection, window->swapChain) != PVRSRV_OK)
+            return WSEGL_BAD_DRAWABLE;
+        break;
+    case PSP2_DRAWABLE_TYPE_PIXMAP:
+        pixmap = (NativePixmapType)hDrawable;
+        if(PVRSRVUnmapMemoryFromGpu(pixmap->psDevData, pixmap->memBase, 0, IMG_FALSE) != PVRSRV_OK)
+            return WSEGL_BAD_DRAWABLE;
+        if(sceKernelFreeMemBlock(pixmap->memUID) < 0) return WSEGL_BAD_DRAWABLE;
+        break;
+    default:
+        return WSEGL_BAD_DRAWABLE;
+    }
+    return WSEGL_SUCCESS;
 }
+
 
 static WSEGLError WSEGL_SwapDrawable(WSEGLDrawableHandle hDrawable, unsigned long ui32Data)
 {

@@ -3466,6 +3466,7 @@ bad_op:
 
 	/* If the mipmap is attached to any framebuffer, notify it of the change */
 	FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
     if(!ui32Level && (pfnCopyTextureData == (PFNCopyTextureData)CopyTexture32Bits ||
        pfnCopyTextureData == (PFNCopyTextureData)CopyTexture16Bits ||
@@ -5474,6 +5475,7 @@ bad_op:
 		 * notify all framebuffers attached to this texture
 		 */
 		FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		/* Make sure to flush the read render surface, not the write one */
 		if(ScheduleTA(gc, psReadParams->psRenderSurface, GLES2_SCHEDULE_HW_MIDSCENE_RENDER | GLES2_SCHEDULE_HW_LAST_IN_SCENE) != IMG_EGL_NO_ERROR)
@@ -5528,6 +5530,7 @@ bad_op:
 			 * notify all framebuffers attached to this texture
 			 */
 			FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 			/* Make sure to flush the read render surface, not the write one */
 			if(ScheduleTA(gc, psReadParams->psRenderSurface,
@@ -6324,6 +6327,7 @@ bad_op:
 		 * notify all framebuffers attached to this texture
 		 */
 		FBOAttachableHasBeenModified(gc, (GLES2FrameBufferAttachable*)psMipLevel);
+        if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		/* Make sure to flush the read render surface, not the write one */
 		if(ScheduleTA(gc, psReadParams->psRenderSurface, GLES2_SCHEDULE_HW_MIDSCENE_RENDER | GLES2_SCHEDULE_HW_LAST_IN_SCENE) != IMG_EGL_NO_ERROR)

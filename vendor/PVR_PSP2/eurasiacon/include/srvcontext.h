@@ -120,8 +120,14 @@ typedef struct SrvSysContext_TAG
 	IMG_SID						hPerProcRef;
 	IMG_HANDLE hMemoryStatsLock;
 	PvrMemoryCounters memoryCounters;
+    IMG_BOOL clientInfoOwned;
+    IMG_UINT32 terminalState;
+    const IMG_CHAR *terminalOperation;
+    IMG_INT32 terminalCode;
 
 } SrvSysContext;
+
+#include "device_fault.h"
 
 
 #endif /* _SRVCONTEXT_H_ */
