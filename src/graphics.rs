@@ -726,13 +726,34 @@ impl Context {
         self.check("vertex upload")?;
         Ok(out)
     }
+    /// Upload 32-bit element indices. Use `index_buffer_u16` when the vertex
+    /// domain fits in 16 bits to reduce index bandwidth and vertex fetch work.
     pub fn index_buffer(&self, indices: &[u32]) -> Result<IndexBuffer> {
-        self.open()?;
-        if std::mem::size_of_val(indices) > i32::MAX as usize {
-            return Err(Error::Invalid("index buffer extent"));
-        }
         if !self.0.caps.indices_u32 {
             return Err(Error::Unsupported("32-bit element indices"));
+        }
+        // SAFETY: u32 has no padding and all bytes of this borrowed slice are initialized.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.index_buffer_bytes(bytes, 4, indices.iter().copied().max().unwrap_or(0))
+    }
+    /// Upload 16-bit element indices, supported by every GLES2 device.
+    pub fn index_buffer_u16(&self, indices: &[u16]) -> Result<IndexBuffer> {
+        // SAFETY: u16 has no padding and the slice remains borrowed through the upload.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.index_buffer_bytes(
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn index_buffer_bytes(&self, bytes: &[u8], width: usize, maximum: u32) -> Result<IndexBuffer> {
+        self.open()?;
+        if bytes.len() > i32::MAX as usize {
+            return Err(Error::Invalid("index buffer extent"));
         }
         let name = unsafe {
             self.0
@@ -743,21 +764,18 @@ impl Context {
         let out = IndexBuffer {
             owner: self.0.clone(),
             name,
-            count: indices.len(),
-            capacity: indices.len(),
-            maximum: indices.iter().copied().max().unwrap_or(0),
+            count: bytes.len() / width,
+            capacity: bytes.len() / width,
+            maximum,
+            width,
         };
         unsafe {
             self.0
                 .gl
                 .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(name));
-            let data = std::slice::from_raw_parts(
-                indices.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(indices),
-            );
             self.0
                 .gl
-                .buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, data, glow::STATIC_DRAW);
+                .buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
         }
         self.check("index upload")?;
         Ok(out)
@@ -783,28 +801,52 @@ impl Context {
         buffer.count = data.len() / buffer.stride as usize;
         Ok(())
     }
-    /// Replace active u32 indices without reallocating their storage. The maximum
-    /// index and active count are updated together after a successful upload.
+    /// Replace active u32 indices within completed storage of the same width.
     pub fn update_indices(&self, buffer: &mut IndexBuffer, indices: &[u32]) -> Result<()> {
+        // SAFETY: initialized u32 storage, borrowed until the driver copy finishes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_bytes(buffer, bytes, 4, indices.iter().copied().max().unwrap_or(0))
+    }
+    /// Replace active u16 indices within completed storage of the same width.
+    pub fn update_indices_u16(&self, buffer: &mut IndexBuffer, indices: &[u16]) -> Result<()> {
+        // SAFETY: initialized u16 storage, borrowed until the driver copy finishes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_bytes(
+            buffer,
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn update_index_bytes(
+        &self,
+        buffer: &mut IndexBuffer,
+        bytes: &[u8],
+        width: usize,
+        maximum: u32,
+    ) -> Result<()> {
         self.open()?;
-        if !Rc::ptr_eq(&self.0, &buffer.owner) || indices.len() > buffer.capacity {
-            return Err(Error::Invalid("index update extent or owner"));
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || buffer.width != width
+            || bytes.len() / width > buffer.capacity
+        {
+            return Err(Error::Invalid("index update extent, width or owner"));
         }
         unsafe {
             self.0
                 .gl
                 .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.name));
-            let data = std::slice::from_raw_parts(
-                indices.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(indices),
-            );
             self.0
                 .gl
-                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, 0, data);
+                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, 0, bytes);
         }
         self.check("index update")?;
-        buffer.count = indices.len();
-        buffer.maximum = indices.iter().copied().max().unwrap_or(0);
+        buffer.count = bytes.len() / width;
+        buffer.maximum = maximum;
         Ok(())
     }
     pub fn clear(&self, target: Target<'_>, color: [f32; 4]) -> Result<()> {
@@ -937,8 +979,12 @@ impl Context {
                 gl.draw_elements(
                     glow::TRIANGLES,
                     count,
-                    glow::UNSIGNED_INT,
-                    (draw.range.start * 4) as i32,
+                    if indices.width == 2 {
+                        glow::UNSIGNED_SHORT
+                    } else {
+                        glow::UNSIGNED_INT
+                    },
+                    (draw.range.start as usize * indices.width) as i32,
                 );
             } else {
                 gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
@@ -1309,6 +1355,7 @@ impl Drop for VertexBuffer {
     }
 }
 pub struct IndexBuffer {
+    width: usize,
     owner: Rc<Inner>,
     name: glow::NativeBuffer,
     count: usize,
