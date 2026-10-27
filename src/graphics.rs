@@ -380,39 +380,8 @@ impl Context {
         blocks: &[u8],
         staging: &mut [u8],
     ) -> Result<Texture> {
-        self.validate_size(size)?;
-        if !self.0.caps.bc {
-            return Err(Error::Unsupported("native BC compression"));
-        }
-        if !format.is_compressed() || size.iter().any(|&n| n < 8 || !n.is_power_of_two()) {
-            return Err(Error::Invalid("BC requires power-of-two dimensions >=8"));
-        }
-        let block = if format == TextureFormat::Bc1Rgb {
-            8
-        } else {
-            16
-        };
-        let bytes = (size[0] as usize / 4)
-            .checked_mul(size[1] as usize / 4)
-            .and_then(|n| n.checked_mul(block))
-            .ok_or(Error::Invalid("BC extent"))?;
-        if blocks.len() != bytes || staging.len() != bytes {
-            return Err(Error::Invalid("BC payload extent"));
-        }
-        #[cfg(target_os = "vita")]
-        let (compressed_format, payload) = {
-            reorder_blocks(size, block, blocks, staging);
-            (if block == 8 { 0x60000001 } else { 0x60000002 }, &*staging)
-        };
-        #[cfg(not(target_os = "vita"))]
-        let (compressed_format, payload) = (
-            if block == 8 {
-                glow::COMPRESSED_RGB_S3TC_DXT1_EXT as i32
-            } else {
-                glow::COMPRESSED_RGBA_S3TC_DXT5_EXT as i32
-            },
-            blocks,
-        );
+        let (compressed_format, payload) = self.bc_payload(size, format, blocks, staging)?;
+        let bytes = payload.len();
         let name = unsafe {
             self.0
                 .gl
@@ -462,6 +431,36 @@ impl Context {
         }
         self.check("compressed texture upload")?;
         Ok(texture)
+    }
+    /// Replace all BC blocks while preserving the texture's format and extent.
+    /// The caller must release prior CPU users and complete prior GPU readers
+    /// before recycling storage. Vita uses the driver's completed-storage path;
+    /// desktop EGL updates the existing S3TC allocation. Payload and staging
+    /// extents are validated before modifying the texture.
+    pub fn upload_bc_texture(
+        &self,
+        texture: &Texture,
+        blocks: &[u8],
+        staging: &mut [u8],
+    ) -> Result<()> {
+        self.same(&texture.0.owner)?;
+        let size = texture.0.size;
+        let (format, payload) = self.bc_payload(size, texture.0.format, blocks, staging)?;
+        unsafe {
+            let gl = &self.0.gl;
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture.0.name));
+            #[cfg(target_os = "vita")]
+            gl.compressed_tex_image_2d(
+                glow::TEXTURE_2D, 0, format, size[0] as i32, size[1] as i32,
+                0, payload.len() as i32, payload,
+            );
+            #[cfg(not(target_os = "vita"))]
+            gl.compressed_tex_sub_image_2d(
+                glow::TEXTURE_2D, 0, 0, 0, size[0] as i32, size[1] as i32,
+                format as u32, glow::CompressedPixelUnpackData::Slice(payload),
+            );
+        }
+        self.check("compressed texture replacement")
     }
     /// Upload visible rows, respecting producer padding without hidden copies.
     pub fn upload(
@@ -1065,6 +1064,48 @@ impl Context {
         } else {
             Ok(())
         }
+    }
+    fn bc_payload<'a>(
+        &self,
+        size: [u32; 2],
+        format: TextureFormat,
+        blocks: &'a [u8],
+        staging: &'a mut [u8],
+    ) -> Result<(i32, &'a [u8])> {
+        self.validate_size(size)?;
+        if !self.0.caps.bc {
+            return Err(Error::Unsupported("native BC compression"));
+        }
+        if !format.is_compressed() || size.iter().any(|&n| n < 8 || !n.is_power_of_two()) {
+            return Err(Error::Invalid("BC requires power-of-two dimensions >=8"));
+        }
+        let block = if format == TextureFormat::Bc1Rgb {
+            8
+        } else {
+            16
+        };
+        let bytes = (size[0] as usize / 4)
+            .checked_mul(size[1] as usize / 4)
+            .and_then(|n| n.checked_mul(block))
+            .ok_or(Error::Invalid("BC extent"))?;
+        if blocks.len() != bytes || staging.len() != bytes {
+            return Err(Error::Invalid("BC payload extent"));
+        }
+        #[cfg(target_os = "vita")]
+        let result = {
+            reorder_blocks(size, block, blocks, staging);
+            (if block == 8 { 0x60000001 } else { 0x60000002 }, &*staging)
+        };
+        #[cfg(not(target_os = "vita"))]
+        let result = (
+            if block == 8 {
+                glow::COMPRESSED_RGB_S3TC_DXT1_EXT as i32
+            } else {
+                glow::COMPRESSED_RGBA_S3TC_DXT5_EXT as i32
+            },
+            blocks,
+        );
+        Ok(result)
     }
     fn pixel_format(&self, format: TextureFormat) -> Result<(i32, u32, u32)> {
         let value = match format {
