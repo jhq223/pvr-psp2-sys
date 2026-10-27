@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 新增独立 `gxm` 功能与版本 1 的安全直接设备边界：离线 GXP 程序、映射子分配、真实 strided 目标计费、Morton BC 上传、精确片元裁剪、通知持有的场景/传输、独立扫描缓冲同步，以及显式 drain/reset/close。字形图集在途更新使用有界 GPU 传输暂存；最终关闭按显示 API 切黑并等待交接。GXM-only 构建使用 SDK stubs，详细契约和验证边界见 `docs/gxm.md`。
+
 - 原生资源退役首次发生真实完成或所有权错误后，整个设备永久终止新提交、分配和清理，保留未退役 backing、Services 和模块至进程结束。`graphics::Context::terminal_fault` 返回首个操作及原始错误；GL/EGL 错误映射为 `Error::Terminal`，资源析构与关闭保留同一终态。EGL 成功结束后撤掉诊断函数入口，再卸载模块。
 
 - `graphics::Context::target_layout` 以固定 STRIDE 行距计算 RGBA8 色彩存储，`target_footprint` 显式查询同参数 GXM RTData 大小；`memory_usage` 分别采样纹理堆保留/使用、已注册存储、RTData 实际映射及设备子分配。计数随真实分配/释放成功更新，历史峰值分域保留。两个诊断 getter 通过现有 proc-address 表加载，运行模块需同步重建。

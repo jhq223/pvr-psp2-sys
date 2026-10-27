@@ -20,6 +20,7 @@ PVR2D 接口位于 crate 根模块，EGL 和 GLES2 接口位于 `gles` 模块。
 | Feature | 接口 |
 | --- | --- |
 | `platform` | 控制器、触摸、系统键盘、电源通知、事件等待、AudioOut 和文件 IO |
+| `gxm` | 直接 GXM 设备、离线 GXP、纹理/目标、索引绘制、完成通知和显示队列；[接口契约](docs/gxm.md) |
 | `graphics` | EGL 上下文、纹理、着色器程序、绘制和 GPU fence |
 | `video` | 从可定位的数据流读取并硬解 H.264/AAC，原生分配接入调用者的内存额度 |
 
