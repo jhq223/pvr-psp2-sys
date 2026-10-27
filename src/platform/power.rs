@@ -139,10 +139,10 @@ impl Drop for PowerEvents {
         // SAFETY: disable the callback before freeing its stable context.
         unsafe {
             sdk::scePowerUnregisterCallback(self.callback);
-            if sdk::sceKernelDeleteCallback(self.callback) < 0 {
-                if let Some(state) = self.state.take() {
-                    std::mem::forget(state);
-                }
+            if sdk::sceKernelDeleteCallback(self.callback) < 0
+                && let Some(state) = self.state.take()
+            {
+                std::mem::forget(state);
             }
         }
     }

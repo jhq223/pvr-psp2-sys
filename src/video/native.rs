@@ -560,8 +560,8 @@ impl Player {
             || rows - height >= 16
             || stride > 960
             || rows > 544
-            || stride % 2 != 0
-            || rows % 2 != 0
+            || !stride.is_multiple_of(2)
+            || !rows.is_multiple_of(2)
         {
             return Err(format!(
                 "AvPlayer NV12 storage {}x{} does not cover visible {}x{}",

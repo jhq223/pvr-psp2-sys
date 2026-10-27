@@ -124,13 +124,13 @@ fn scan<R: Read + Seek + ?Sized>(
         }
         let delta = delta as u64;
         while left != 0 {
-            if let Some(composition) = &mut composition {
-                if composition_left == 0 {
-                    let next = composition
-                        .next(reader)?
-                        .ok_or("MP4 ctts covers fewer samples than stts")?;
-                    (composition_left, offset) = next;
-                }
+            if let Some(composition) = &mut composition
+                && composition_left == 0
+            {
+                let next = composition
+                    .next(reader)?
+                    .ok_or("MP4 ctts covers fewer samples than stts")?;
+                (composition_left, offset) = next;
             }
             let count = if composition.is_some() {
                 left.min(composition_left)
@@ -168,10 +168,10 @@ fn scan<R: Read + Seek + ?Sized>(
     if result.frames == 0 {
         return Err("MP4 video timing table is empty".into());
     }
-    if let Some(composition) = &mut composition {
-        if composition_left != 0 || composition.next(reader)?.is_some() {
-            return Err("MP4 ctts covers more samples than stts".into());
-        }
+    if let Some(composition) = &mut composition
+        && (composition_left != 0 || composition.next(reader)?.is_some())
+    {
+        return Err("MP4 ctts covers more samples than stts".into());
     }
     Ok(result)
 }
