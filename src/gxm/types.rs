@@ -214,7 +214,7 @@ pub enum Blend {
 /// Offline GXM program, with retained reflection symbols.
 #[derive(Clone, Copy)]
 pub enum ShaderCode<'a> {
-    /// Offline GXP with reflection symbols and a matching declared byte length.
+    /// Compiler-padded GXP payload with retained reflection symbols.
     GxpBinary(&'a [u8]),
 }
 /// Map a caller vertex attribute identity to its retained GXP parameter name.

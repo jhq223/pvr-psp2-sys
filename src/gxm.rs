@@ -9,6 +9,8 @@
 //! Display scanout owns separate leases. `finish`, `reset`, and `close` drain
 //! submitted work explicitly; target switches never call `sceGxmFinish`.
 #![deny(missing_docs)]
+#[cfg(any(target_os = "vita", test))]
+mod gxp;
 mod layout;
 #[cfg(any(target_os = "vita", test))]
 mod suballoc;

@@ -14,12 +14,7 @@ struct Binary {
 impl Binary {
     fn new(code: ShaderCode<'_>, fault: &Fault) -> Result<Self> {
         let ShaderCode::GxpBinary(bytes) = code;
-        if bytes.len() < 0x9c
-            || bytes.get(..4) != Some(b"GXP\0")
-            || u32::from_le_bytes(bytes[8..12].try_into().expect("header")) as usize != bytes.len()
-        {
-            return Err(Error::Invalid("GXP header or declared length"));
-        }
+        let bytes = super::gxp::payload(bytes)?;
         let mut aligned = std::vec![0u32;bytes.len().div_ceil(4)];
         unsafe {
             core::ptr::copy_nonoverlapping(
