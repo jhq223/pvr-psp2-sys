@@ -5,12 +5,7 @@
 use crate::gles::*;
 use glow::HasContext;
 use std::prelude::v1::*;
-use std::{
-    cell::Cell,
-    ops::Range,
-    rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{cell::Cell, ops::Range, rc::Rc, sync::atomic::Ordering};
 
 mod fault;
 mod memory;
@@ -19,7 +14,7 @@ pub use fault::DeviceFault;
 pub use memory::{DriverMemoryUsage, HeapMemoryUsage, TargetFootprint, TargetLayout};
 pub use types::{Capabilities, CompletionMode, DriverInfo, Error};
 
-static ACTIVE: AtomicBool = AtomicBool::new(false);
+use crate::graphics_active::ACTIVE;
 
 type Result<T> = std::result::Result<T, Error>;
 

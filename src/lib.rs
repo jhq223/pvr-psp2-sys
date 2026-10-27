@@ -24,6 +24,11 @@ extern crate std;
 /// Thread-bound graphics resources and command submission.
 #[cfg(feature = "graphics")]
 pub mod graphics;
+#[cfg(any(feature = "graphics", all(feature = "gxm", target_os = "vita")))]
+mod graphics_active;
+/// Direct GXM resources, scenes, notifications and display ownership.
+#[cfg(feature = "gxm")]
+pub mod gxm;
 /// Owned native host services.
 #[cfg(all(feature = "platform", target_os = "vita"))]
 pub mod platform;

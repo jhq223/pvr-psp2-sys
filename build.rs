@@ -22,6 +22,11 @@ fn main() {
         return;
     }
 
+    // A direct GXM product needs only the SDK import stubs.
+    if cfg!(feature = "gxm") && !cfg!(feature = "graphics") {
+        return;
+    }
+
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let archive = output.join("libpvr_psp2_stubs.a");

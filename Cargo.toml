@@ -19,6 +19,8 @@ build-driver = []
 std = []
 platform = ["std", "dep:vitasdk-sys"]
 graphics = ["std", "dep:glow", "dep:vitasdk-sys", "dep:khronos-egl"]
+# Direct GXM; never loads or links the private PVR/EGL modules.
+gxm = ["std", "dep:vitasdk-sys"]
 video = ["platform"]
 
 [[example]]
