@@ -28,5 +28,28 @@ int main(void) {
         assert(!blocks && !mappings && !mspaces && !head.spare);
         assert(head.info.hblks==1 && head.info.arena==4096 && !head.info.ordblks);
     }
+    for(unsigned mode=FAIL_UNMAP; mode<=FAIL_FREE; ++mode) {
+        reset(SUCCESS,1);
+        SceHeapAllocOptParam opt={sizeof(opt),64};
+        void *p=sceHeapAllocHeapMemoryWithOption(&head,4096,&opt);assert(p);
+        assert(!sceHeapFreeHeapMemory(&head,p));
+        SceHeapMspaceLink *retained=head.spare;
+        int arena=head.info.arena,hblks=head.info.hblks;
+        failure=mode;
+        assert(!sceHeapTrimEmpty(&head) && terminal_word && terminal_code==(mode==FAIL_UNMAP?107:-108));
+        assert(head.spare==retained && head.prim.next==retained && blocks==1);
+        assert(head.info.arena==arena && head.info.hblks==hblks);
+        unsigned unmapped=unmap_calls,freed=free_calls;
+        assert(!sceHeapTrimEmpty(&head));
+        assert(!sceHeapAllocHeapMemoryWithOption(&head,4096,&opt));
+        assert(sceHeapFreeHeapMemory(&head,p)==SCE_HEAP_ERROR_INVALID_ID);
+        PvrHeapReleaseFault();
+        assert(st_heapFaultOwner==NULL && st_heapFaultWord==&terminal_word);
+        assert(unmap_calls==unmapped && free_calls==freed);
+        /* Test-only cleanup of retained mocks, after validating no re-entry. */
+        free(block);block=NULL;blocks=mappings=mspaces=0;
+    }
+    reset(SUCCESS,1);st_liveHeaps=0;PvrHeapReleaseFault();
+    assert(!st_heapFault && !st_heapFaultOwner && !st_heapFaultWord);
     puts("heap reuse: USER/UNC/CDRAM mapped block reuse, size mismatch trimming and 8 MiB bound passed");
 }

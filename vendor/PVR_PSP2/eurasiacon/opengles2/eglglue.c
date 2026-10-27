@@ -113,11 +113,11 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 		PVRSRV_ERROR eError;
 
 		/* Make the managers wait for the resources in their lists */
-        if(!KRM_WaitForAllResources(&psSharedState->psTextureManager->sKRM, GLES2_DEFAULT_WAIT_RETRIES) ||
-           !KRM_WaitForAllResources(&psSharedState->sUSEShaderVariantKRM, GLES2_DEFAULT_WAIT_RETRIES) ||
-           !KRM_WaitForAllResources(&psSharedState->sBufferObjectKRM, GLES2_DEFAULT_WAIT_RETRIES))
+        if((psSharedState->psTextureManager && psSharedState->psTextureManager->sKRM.bInitialized && !KRM_WaitForAllResources(&psSharedState->psTextureManager->sKRM, GLES2_DEFAULT_WAIT_RETRIES)) ||
+           (psSharedState->sUSEShaderVariantKRM.bInitialized && !KRM_WaitForAllResources(&psSharedState->sUSEShaderVariantKRM, GLES2_DEFAULT_WAIT_RETRIES)) ||
+           (psSharedState->sBufferObjectKRM.bInitialized && !KRM_WaitForAllResources(&psSharedState->sBufferObjectKRM, GLES2_DEFAULT_WAIT_RETRIES)))
         { KrkrDeviceFault(gc->psSysContext, "shared-wait", 0); return; }
-        KRM_DestroyUnneededGhosts(gc, &psSharedState->sBufferObjectKRM);
+        if(psSharedState->sBufferObjectKRM.bInitialized) KRM_DestroyUnneededGhosts(gc, &psSharedState->sBufferObjectKRM);
 
 
 		/* Destroy all the shareable resources */
@@ -145,11 +145,11 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 
 
 		/* Destroy the USSE code variant manager _before_ destroying the heaps since it uses them */
-		KRM_Destroy(gc, &psSharedState->sUSEShaderVariantKRM);
+		if(psSharedState->sUSEShaderVariantKRM.bInitialized) KRM_Destroy(gc, &psSharedState->sUSEShaderVariantKRM);
         if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		/* Destroy the TA kick buffer object manager */
-		KRM_Destroy(gc, &psSharedState->sBufferObjectKRM);
+		if(psSharedState->sBufferObjectKRM.bInitialized) KRM_Destroy(gc, &psSharedState->sBufferObjectKRM);
         if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 
@@ -236,8 +236,16 @@ static IMG_VOID FreeContextSharedState(GLES2Context *gc)
 		}
 
 
-		if(psSharedState->pvUNCHeap) sceHeapDeleteHeap(psSharedState->pvUNCHeap);
-		if(psSharedState->pvCDRAMHeap) sceHeapDeleteHeap(psSharedState->pvCDRAMHeap);
+        if(psSharedState->pvUNCHeap) {
+            int retired = sceHeapDeleteHeap(psSharedState->pvUNCHeap);
+            if(retired < 0) { KrkrDeviceFault(gc->psSysContext, "heap-delete", retired); return; }
+            psSharedState->pvUNCHeap = IMG_NULL;
+        }
+        if(psSharedState->pvCDRAMHeap) {
+            int retired = sceHeapDeleteHeap(psSharedState->pvCDRAMHeap);
+            if(retired < 0) { KrkrDeviceFault(gc->psSysContext, "heap-delete", retired); return; }
+            psSharedState->pvCDRAMHeap = IMG_NULL;
+        }
 
 		/* Clear for safety */
 		GLES2MemSet(psSharedState, 0, sizeof(GLES2ContextSharedState));
@@ -315,6 +323,7 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				PVR_DPF((PVR_DBG_ERROR,"CreateSharedState: PVRSRVCreateMutex failed on hPrimaryLock (%d)", eError));
 
 				GLES2Free(IMG_NULL, psSharedState);
+                gc->psSharedState = IMG_NULL;
 
 				return IMG_FALSE;
 			}
@@ -330,9 +339,11 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hPrimaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				GLES2Free(IMG_NULL, psSharedState);
+                gc->psSharedState = IMG_NULL;
 
 				return IMG_FALSE;
 			}
@@ -348,6 +359,7 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hSecondaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				eError = PVRSRVDestroyMutex(psSharedState->hPrimaryLock);
@@ -355,9 +367,11 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hPrimaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				GLES2Free(IMG_NULL, psSharedState);
+                gc->psSharedState = IMG_NULL;
 
 				return IMG_FALSE;
 			}
@@ -373,6 +387,7 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hTertiaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				eError = PVRSRVDestroyMutex(psSharedState->hSecondaryLock);
@@ -380,6 +395,7 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hSecondaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				eError = PVRSRVDestroyMutex(psSharedState->hPrimaryLock);
@@ -387,9 +403,11 @@ static IMG_BOOL CreateSharedState(GLES2Context *gc, GLES2Context *psShareContext
 				if (eError != PVRSRV_OK)
 				{
 					PVR_DPF((PVR_DBG_ERROR, "CreateSharedState: PVRSRVDestroyMutex failed on hPrimaryLock (%d)", eError));
+                    KrkrDeviceFault(gc->psSysContext, "shared-create-mutex", eError); return IMG_FALSE;
 				}
 
 				GLES2Free(IMG_NULL, psSharedState);
+                gc->psSharedState = IMG_NULL;
 
 				return IMG_FALSE;
 			}
@@ -590,6 +608,11 @@ exit_out:
  Description        : Initialises a context - may setup shared name tables from a 
 					  sharecontext. Also sets up default framebuffer
 ************************************************************************************/
+static void HeapDeviceFault(void *owner, const char *operation, int error)
+{
+    KrkrDeviceFault((SrvSysContext *)owner, operation, error);
+}
+
 static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLcontextMode *psMode)
 {
 #if defined(GLES2_EXTENSION_VERTEX_ARRAY_OBJECT)
@@ -631,6 +654,7 @@ static IMG_BOOL InitContext(GLES2Context *gc, GLES2Context *psShareContext, EGLc
 	{
 		heapOpt.memblockType = SCE_HEAP_OPT_MEMBLOCK_TYPE_USER_NC;
 
+        sceHeapBindDeviceFault(HeapDeviceFault, gc->psSysContext, &gc->psSysContext->terminalState);
 		gc->pvUNCHeap = sceHeapCreateHeap(gc->ps3DDevData,
 			gc->psSysContext->hDevMemContext,
 			"OGLES2UNCHeap",
@@ -1309,6 +1333,7 @@ Failed_GC_Creation:
 
 	if(!DeInitContext(gc)) return IMG_FALSE;
 
+	sceHeapReleaseDeviceFault();
 	_GLES2DestroyContext(gc);
 
 	return IMG_FALSE;
@@ -1336,6 +1361,7 @@ static IMG_BOOL GLES2DestroyGC(EGLContextHandle hContext)
 
 	DestroyExtensionString(gc);
 
+	sceHeapReleaseDeviceFault();
 	_GLES2DestroyContext(gc);
 
 	return bReturnValue;

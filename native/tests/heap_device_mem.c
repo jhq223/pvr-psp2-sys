@@ -1,3 +1,5 @@
+#define PVRSRV_ERROR_INVALID_CONTEXT (-9999)
+typedef int IMG_INT32;
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>

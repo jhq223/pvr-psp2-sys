@@ -223,6 +223,8 @@ IMG_INTERNAL IMG_VOID ShaderScratchMemAddRef(GLES2Context *gc, GLES2ShaderScratc
 ************************************************************************************/
 static IMG_VOID ShaderScratchMemDelRef(GLES2Context *gc, GLES2ShaderScratchMem *psScratchMem)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	IMG_BOOL bDoFree = IMG_FALSE;
 
 	/* Ignore NULL argument silently */
@@ -247,6 +249,7 @@ static IMG_VOID ShaderScratchMemDelRef(GLES2Context *gc, GLES2ShaderScratchMem *
 	if(bDoFree)
 	{
 		GLES2FREEDEVICEMEM(gc->ps3DDevData, psScratchMem->psMemInfo);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		GLES2Free(IMG_NULL, psScratchMem);
 	}
@@ -286,6 +289,8 @@ IMG_INTERNAL IMG_VOID ShaderIndexableTempsMemAddRef(GLES2Context *gc, GLES2Shade
 ************************************************************************************/
 static IMG_VOID ShaderIndexableTempsMemDelRef(GLES2Context *gc, GLES2ShaderIndexableTempsMem *psIndexableTempsMem)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	IMG_BOOL bDoFree = IMG_FALSE;
 
 	/* Ignore NULL argument silently */
@@ -310,6 +315,7 @@ static IMG_VOID ShaderIndexableTempsMemDelRef(GLES2Context *gc, GLES2ShaderIndex
 	if(bDoFree)
 	{
 		GLES2FREEDEVICEMEM(gc->ps3DDevData, psIndexableTempsMem->psMemInfo);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 		GLES2Free(IMG_NULL, psIndexableTempsMem);
 	}
@@ -1607,8 +1613,11 @@ IMG_INTERNAL IMG_VOID ReclaimUSEShaderVariantMemKRM(IMG_VOID *pvContext, KRMReso
 	/* Note the tricky pointer arithmetic. It is necessary */
 	GLES2USEShaderVariant *psUSEVariant = (GLES2USEShaderVariant*)((IMG_UINTPTR_T)psResource -offsetof(GLES2USEShaderVariant, sResource));
 	GLES2Context	 *gc = (GLES2Context *)pvContext;
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
+
 
 	DestroyUSEShaderVariant(gc, psUSEVariant);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 }
 
 
@@ -1644,13 +1653,17 @@ static IMG_VOID DetachUSEShaderPDSVariants(GLES2Context *gc, GLES2USEShaderVaria
 
 static IMG_VOID FreeUSEShaderVariantStorage(GLES2Context *gc, GLES2USEShaderVariant *variant)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
     GLES2PDSCodeVariant *pds = variant->psPDSVariant;
     if(variant->psPatchedShader)
         PVRUniPatchDestroyHWShader(gc->sProgram.pvUniPatchContext, variant->psPatchedShader);
     UCH_CodeHeapFree(variant->psCodeBlock);
     USESecondaryUploadTaskDelRef(gc, variant->psSecondaryUploadTask);
     ShaderScratchMemDelRef(gc, variant->psScratchMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
     ShaderIndexableTempsMemDelRef(gc, variant->psIndexableTempsMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
     while(pds)
     {
         GLES2PDSCodeVariant *next = pds->psNext;
@@ -1670,6 +1683,9 @@ static IMG_VOID FreeUSEShaderVariantStorage(GLES2Context *gc, GLES2USEShaderVari
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyUSECodeVariantGhostKRM(IMG_VOID *pvContext, KRMResource *psResource)
 {
+    GLES2Context *gc = (GLES2Context *)pvContext;
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
     GLES2USEShaderVariant *variant = (GLES2USEShaderVariant *)
         ((IMG_UINTPTR_T)psResource - offsetof(GLES2USEShaderVariant, sResource));
     FreeUSEShaderVariantStorage((GLES2Context *)pvContext, variant);
@@ -1715,6 +1731,8 @@ static IMG_VOID GhostUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *v
 ************************************************************************************/
 static IMG_VOID FreeListOfVertexUSEVariants(GLES2Context *gc, GLES2USEShaderVariant **ppsUSEVariantListHead)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2USEShaderVariant     *psUSEVariant, *psUSEVariantNext;
 
 	psUSEVariant = *ppsUSEVariantListHead;
@@ -1736,6 +1754,7 @@ static IMG_VOID FreeListOfVertexUSEVariants(GLES2Context *gc, GLES2USEShaderVari
 			psUSEVariantNext = psUSEVariant->psNext;
 
 			DestroyUSEShaderVariant(gc, psUSEVariant);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 			if(gc->sProgram.psCurrentVertexVariant==psUSEVariant)
 			{
@@ -1785,6 +1804,8 @@ IMG_INTERNAL IMG_VOID DestroyVertexVariants(GLES2Context *gc, const IMG_VOID* pv
 ************************************************************************************/
 static IMG_VOID FreeListOfFragmentUSEVariants(GLES2Context *gc, GLES2USEShaderVariant **ppsUSEVariantListHead)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	KRMKickResourceManager *psKRM = &gc->psSharedState->sUSEShaderVariantKRM;
 	GLES2USEShaderVariant       *psUSEVariant, *psUSEVariantNext;
 
@@ -1802,6 +1823,7 @@ static IMG_VOID FreeListOfFragmentUSEVariants(GLES2Context *gc, GLES2USEShaderVa
 		else
 		{
 			DestroyUSEShaderVariant(gc, psUSEVariant);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 		}
 
 		if(gc->sProgram.psCurrentFragmentVariant==psUSEVariant)
@@ -4696,6 +4718,8 @@ static IMG_VOID DetachAllShaders(GLES2Context *gc, GLES2Program *psProgram, IMG_
 ************************************************************************************/
 static IMG_VOID FreeProgram(GLES2Context *gc, GLES2Program *psProgram, IMG_BOOL bIsShutdown)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLSLAttribUserBinding    *psBinding, *psTmp;
 
 	/* Free uniforms */
@@ -4732,18 +4756,26 @@ static IMG_VOID FreeProgram(GLES2Context *gc, GLES2Program *psProgram, IMG_BOOL 
 	GLES2Free(IMG_NULL, psProgram->sFragment.pfConstantData);
 
 	SharedShaderStateDelRef(gc, psProgram->sVertex.psSharedState);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	SharedShaderStateDelRef(gc, psProgram->sFragment.psSharedState);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	DetachAllShaders(gc, psProgram, bIsShutdown);
 
 	FreeListOfVertexUSEVariants(gc, &psProgram->sVertex.psVariant);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	FreeListOfFragmentUSEVariants(gc, &psProgram->sFragment.psVariant);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	ShaderScratchMemDelRef(gc, psProgram->sVertex.psScratchMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	ShaderIndexableTempsMemDelRef(gc, psProgram->sVertex.psIndexableTempsMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	ShaderScratchMemDelRef(gc, psProgram->sFragment.psScratchMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	ShaderIndexableTempsMemDelRef(gc, psProgram->sFragment.psIndexableTempsMem);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 	GLES2Free(IMG_NULL, psProgram);
 }
@@ -4925,14 +4957,19 @@ IMG_INTERNAL IMG_BOOL CreateProgramState(GLES2Context *gc)
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID FreeProgramState(GLES2Context *gc)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	/* Unbind the current program */
 	UseProgram(gc, 0);
 
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sProgram.psDummyFragUSECode);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sProgram.psDummyVertUSECode);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 
 #if defined(FIX_HW_BRN_31988)
 	GLES2FREEDEVICEMEM(gc->ps3DDevData, gc->sProgram.psBRN31988FragUSECode);
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
 #endif
 
 #if defined(SUPPORT_SOURCE_SHADER)
@@ -4957,6 +4994,8 @@ IMG_INTERNAL IMG_VOID FreeProgramState(GLES2Context *gc)
 ************************************************************************************/
 IMG_INTERNAL IMG_VOID DestroyUSEShaderVariant(GLES2Context *gc, GLES2USEShaderVariant *variant)
 {
+
+    if(KrkrDeviceFaulted(gc->psSysContext)) return;
     UnlinkUSEShaderVariant(gc, variant);
     KRM_RemoveResourceFromAllLists(&gc->psSharedState->sUSEShaderVariantKRM, &variant->sResource);
     DetachUSEShaderPDSVariants(gc, variant);

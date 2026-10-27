@@ -140,3 +140,78 @@ fn failed_egl_and_code_heap_owners_keep_their_wrappers_and_backing() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn texture_heap_retirement_preserves_blocks_and_stops_all_later_mutations() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Path::new(env!("CARGO_TARGET_TMPDIR")).join("heap-retirement");
+    fs::create_dir_all(&output).unwrap();
+    let native = root.join("vendor/PVR_PSP2/eurasiacon");
+    let source = fs::read(native.join("opengles2/psp2/heap.c")).unwrap();
+    let source = String::from_utf8_lossy(&source).replace("\r\n", "\n");
+    for (names, file) in [
+        (
+            &[
+                "static int RetireHeapBlock(",
+                "static unsigned int TrimSpare(",
+                "unsigned int sceHeapTrimEmpty(",
+                "void *sceHeapAllocHeapMemoryWithReport(",
+                "void\t*sceHeapAllocHeapMemoryWithOption(",
+            ][..],
+            "heap_allocation_functions.inc",
+        ),
+        (
+            &["int\tsceHeapFreeHeapMemory("][..],
+            "heap_release_functions.inc",
+        ),
+    ] {
+        let mut functions = String::new();
+        for name in names {
+            let start = source.find(name).unwrap();
+            let end = start + source[start..].find("\n}").unwrap() + 2;
+            functions.push_str(&source[start..end]);
+            functions.push('\n');
+        }
+        fs::write(output.join(file), functions).unwrap();
+    }
+    let header = fs::read_to_string(native.join("opengles2/psp2/libheap_custom.h")).unwrap();
+    let start = header.find("typedef struct SceHeapAllocFailure {").unwrap();
+    let end = start + header[start..].find(';').unwrap() + 1;
+    // The declaration contains fields; retain the entire declaration's closing brace.
+    let end = end
+        + header[end..].find("} SceHeapAllocFailure;").unwrap()
+        + "} SceHeapAllocFailure;".len();
+    fs::write(output.join("heap_failure.inc"), &header[start..end]).unwrap();
+    for name in ["heap_allocation", "heap_reuse"] {
+        let executable = output.join(name);
+        let result = Command::new("cc")
+            .args([
+                "-std=c99",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wno-unused-parameter",
+                "-fsanitize=address,undefined",
+            ])
+            .arg("-I")
+            .arg(&output)
+            .arg("-I")
+            .arg(native.join("opengles2"))
+            .arg(root.join("native/tests").join(format!("{name}.c")))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result = Command::new(executable).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}

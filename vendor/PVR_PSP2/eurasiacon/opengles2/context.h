@@ -456,7 +456,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 	{
 		failure->stage = "descriptor";
 		failure->error = PVRSRV_ERROR_OUT_OF_MEMORY;
-		sceHeapFreeHeapMemory(heap, mem);
+		if(sceHeapFreeHeapMemory(heap, mem) < 0) return PVRSRV_ERROR_INVALID_CONTEXT;
 		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
@@ -473,7 +473,7 @@ __inline PVRSRV_ERROR GLES2AllocDeviceMemHeapInternal(GLES2Context *gc, IMG_UINT
 		{
 			failure->stage = "sync-object";
 			failure->error = error;
-			sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem);
+			if(sceHeapFreeHeapMemory(((GLES2HeapMemInfo *)psMemInfo)->heap, mem) < 0) return PVRSRV_ERROR_INVALID_CONTEXT;
 			GLES2Free(IMG_NULL, psMemInfo);
 			return error;
 		}

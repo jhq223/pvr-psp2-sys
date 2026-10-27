@@ -130,6 +130,10 @@ int   sceHeapIsAllocatedHeapMemory(void *heap, void *ptr);
 /*E Get size of empty heap memory */
 int   sceHeapGetTotalFreeSize(void *heap);
 unsigned int sceHeapTrimEmpty(void *heap);
+/* A terminal Services owner remains bound until process exit. Healthy teardown
+ * removes the binding after the last heap and GC cleanup are complete. */
+void sceHeapBindDeviceFault(void (*fault)(void *,const char *,int), void *owner,const unsigned int *word);
+void sceHeapReleaseDeviceFault(void);
 
 /*J ヒープメモリの情報を取得 */
 /*E Get heap memory usage status */
