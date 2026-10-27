@@ -800,6 +800,113 @@ impl Context {
         buffer.count = data.len() / buffer.stride as usize;
         Ok(())
     }
+    /// Update a vertex range without changing the active count or layout.
+    /// `first_vertex` is measured in vertices; data contains complete vertices.
+    /// The caller must wait for earlier submissions using this buffer to finish.
+    pub fn update_vertex_range(
+        &self,
+        buffer: &mut VertexBuffer,
+        first_vertex: usize,
+        data: &[f32],
+    ) -> Result<()> {
+        self.open()?;
+        let stride = buffer.stride as usize;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || !data.len().is_multiple_of(stride)
+            || first_vertex
+                .checked_add(data.len() / stride)
+                .is_none_or(|end| end > buffer.count)
+        {
+            return Err(Error::Invalid("vertex range extent or owner"));
+        }
+        let offset = first_vertex
+            .checked_mul(stride)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or(Error::Invalid("vertex range offset"))?;
+        unsafe {
+            self.0.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, offset, float_bytes(data));
+        }
+        self.check("vertex range update")
+    }
+    /// Update active u32 indices without changing the active count.
+    /// `first_index` is measured in indices. Draw validation retains the larger
+    /// of the previous and updated maximum; a full update resets that bound.
+    /// Earlier submissions using this buffer must have completed.
+    pub fn update_index_range(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        indices: &[u32],
+    ) -> Result<()> {
+        // SAFETY: initialized u32 storage remains borrowed for the driver copy.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_range_bytes(
+            buffer,
+            first_index,
+            bytes,
+            4,
+            indices.iter().copied().max().unwrap_or(0),
+        )
+    }
+    /// Update active u16 indices with the same range and completion contract as
+    /// `update_index_range`.
+    pub fn update_index_range_u16(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        indices: &[u16],
+    ) -> Result<()> {
+        // SAFETY: initialized u16 storage remains borrowed for the driver copy.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(indices))
+        };
+        self.update_index_range_bytes(
+            buffer,
+            first_index,
+            bytes,
+            2,
+            u32::from(indices.iter().copied().max().unwrap_or(0)),
+        )
+    }
+    fn update_index_range_bytes(
+        &self,
+        buffer: &mut IndexBuffer,
+        first_index: usize,
+        bytes: &[u8],
+        width: usize,
+        maximum: u32,
+    ) -> Result<()> {
+        self.open()?;
+        if !Rc::ptr_eq(&self.0, &buffer.owner)
+            || buffer.width != width
+            || first_index
+                .checked_add(bytes.len() / width)
+                .is_none_or(|end| end > buffer.count)
+        {
+            return Err(Error::Invalid("index range extent, width or owner"));
+        }
+        let offset = first_index
+            .checked_mul(width)
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or(Error::Invalid("index range offset"))?;
+        unsafe {
+            self.0
+                .gl
+                .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.name));
+            self.0
+                .gl
+                .buffer_sub_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, offset, bytes);
+        }
+        self.check("index range update")?;
+        buffer.maximum = buffer.maximum.max(maximum);
+        Ok(())
+    }
     /// Replace active u32 indices within completed storage of the same width.
     pub fn update_indices(&self, buffer: &mut IndexBuffer, indices: &[u32]) -> Result<()> {
         // SAFETY: initialized u32 storage, borrowed until the driver copy finishes.
