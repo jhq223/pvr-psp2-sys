@@ -91,17 +91,20 @@ impl Context {
     }
     fn begin(&self, target: Framebuffer, size: [u32; 2]) -> Result<()> {
         let mut s = self.0.state.borrow_mut();
-        if s.recording
-            .as_ref()
-            .is_some_and(|r| Rc::ptr_eq(&r.target.0, &target.0) && r.size == size)
+        if let Some(recording) = &mut s.recording
+            && Rc::ptr_eq(&recording.target.0, &target.0)
         {
+            if recording.size != size {
+                self.viewport(size);
+                recording.size = size;
+            }
             return Ok(());
         }
         self.end_scene(&mut s)?;
         let (slot, n) = self.reserve_slot(&mut s)?;
         let region = SceGxmValidRegion {
-            xMax: size[0] - 1,
-            yMax: size[1] - 1,
+            xMax: target.size()[0] - 1,
+            yMax: target.size()[1] - 1,
         };
         let code = unsafe {
             sceGxmBeginScene(
@@ -124,17 +127,9 @@ impl Context {
             size,
         });
         self.command("sceGxmBeginScene", code)?;
+        self.viewport(size);
         unsafe {
             let c = self.0.core.native.context;
-            sceGxmSetViewport(
-                c,
-                size[0] as f32 * 0.5,
-                size[0] as f32 * 0.5,
-                size[1] as f32 * 0.5,
-                -(size[1] as f32) * 0.5,
-                0.5,
-                0.5,
-            );
             sceGxmSetCullMode(c, SCE_GXM_CULL_NONE);
             sceGxmSetFrontDepthFunc(c, SCE_GXM_DEPTH_FUNC_ALWAYS);
             sceGxmSetBackDepthFunc(c, SCE_GXM_DEPTH_FUNC_ALWAYS);
@@ -160,6 +155,22 @@ impl Context {
             );
         }
         Ok(())
+    }
+    fn viewport(&self, size: [u32; 2]) {
+        // SAFETY: recording owns a live immediate context. Viewport changes are
+        // scene state; the valid region and color-surface clip retain storage bounds.
+        unsafe {
+            let c = self.0.core.native.context;
+            sceGxmSetViewport(
+                c,
+                size[0] as f32 * 0.5,
+                size[0] as f32 * 0.5,
+                size[1] as f32 * 0.5,
+                -(size[1] as f32) * 0.5,
+                0.5,
+                0.5,
+            );
+        }
     }
     /// Clear the entire physical target through the prepared production GXP program.
     pub fn clear(&self, target: Target<'_>, color: [f32; 4]) -> Result<()> {
