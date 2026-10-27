@@ -74,6 +74,7 @@ static void initialize_case(unsigned w,unsigned h,unsigned bpp,unsigned layout,i
     }
     free(storage.pvLinAddr); free(pixels);
 }
+#ifndef TEXTURE_FAST_NO_MAIN
 int main(void) {
     const unsigned sizes[]={1,3,4,7,8,31,32,33,64,127};
     for(unsigned i=0;i<10;++i) for(unsigned b=1;b<=4;b*=2)
@@ -90,3 +91,4 @@ int main(void) {
     assert(allocation_calls==before);
     puts("texture fast paths: 240 direct/NULL layout cases, source independence, partial updates and busy/flush/sync fallback passed");
 }
+#endif

@@ -2501,6 +2501,20 @@ IMG_INTERNAL IMG_BOOL TextureUploadNativeBC(GLES2Context *gc, GLES2Texture *text
     SWTextureWait(gc, texture);
     if(texture->psMemInfo && texture->psMemInfo->psClientSyncInfo && SGX2DQueryBlitsComplete(gc->ps3DDevData,
         texture->psMemInfo->psClientSyncInfo, IMG_FALSE) != PVRSRV_OK) return IMG_FALSE;
+    /* Whole native-BC replacements may keep completed, identically laid out
+     * device storage. The transfer query above and KRM below are nonblocking;
+     * live consumers retain the existing allocation/ghost path. */
+    if(texture->psMemInfo && texture->bResidence && texture->ui32NumLevels == 1 &&
+       texture->psFormat == format && old->psTexFormat == format &&
+       old->eRequestedFormat == internalFormat && old->pui8Buffer == GLES2_LOADED_LEVEL &&
+       old->ui32Width == width && old->ui32Height == height &&
+       old->ui32ImageSize == (width / 4) * (height / 4) * format->ui32TotalBytesPerTexel &&
+       texture->psMemInfo->uAllocSize >= old->ui32ImageSize &&
+       !KRM_IsResourceNeeded(&gc->psSharedState->psTextureManager->sKRM, &texture->sResource))
+    {
+        GLES2MemCopy(texture->psMemInfo->pvLinAddr, pixels, old->ui32ImageSize);
+        return IMG_TRUE;
+    }
     candidate.sState = texture->sState;
     candidate.ui32TextureTarget = GLES2_TEXTURE_TARGET_2D;
     candidate.ui32LevelsConsistent = GLES2_TEX_UNKNOWN;

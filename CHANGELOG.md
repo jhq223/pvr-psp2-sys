@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 原生 BC1/BC3 同格式、同尺寸的完整替换在传输与 GPU 使用均已完成时复用设备存储；其余情况保留原分配和 ghost 路径。应用需随包更新重新构建的 `libGLESv2.suprx`。
+
 - `graphics::Context::draw_filtered` 为一次绘制选择最近邻或线性过滤；普通 `draw` 恢复线性过滤，模式变化时更新纹理状态。
 - `graphics::Texture` 按共享分配身份比较，供调用者识别可合批的绘制。
 
